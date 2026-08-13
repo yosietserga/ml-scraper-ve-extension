@@ -73,6 +73,10 @@
     }
   }
 
+  $('btn-analysis').addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('analysis.html') });
+  });
+
   $('btn-show').addEventListener('click', async () => {
     const ok = await sendToActiveTab('SHOW_PANEL');
     if (ok) {

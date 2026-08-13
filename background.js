@@ -59,37 +59,78 @@ function extractMlvId(value) {
   return m ? m[0].replace('_', '-').toUpperCase() : null;
 }
 
-/** Idempotent merge: existing product is updated, new ones appended. */
+/* ------------------------------------------------------------------ */
+/* In-memory cache + debounced persistence                            */
+/*                                                                    */
+/* At scale (thousands of products), reading+writing ALL products to  */
+/* chrome.storage.local on every SAVE_PRODUCTS message is the         */
+/* bottleneck. We keep an in-memory Map keyed by product id, merge     */
+/* deltas into it in O(1) per product, and flush to storage on a      */
+/* debounce so a crawl that saves every 3 pages only writes once.    */
+/* ------------------------------------------------------------------ */
+
+let productsCache = null;      // Map<id, product> or null (not yet loaded)
+let deepQueueCache = null;    // Array
+let flushTimer = null;
+const FLUSH_DELAY_MS = 400;   // debounce window
+
+async function ensureCacheLoaded() {
+  if (productsCache !== null) return;
+  const data = await chrome.storage.local.get([STORAGE_KEYS.PRODUCTS, STORAGE_KEYS.DEEP_QUEUE]);
+  const prods = Array.isArray(data[STORAGE_KEYS.PRODUCTS]) ? data[STORAGE_KEYS.PRODUCTS] : [];
+  productsCache = new Map();
+  for (const p of prods) {
+    const id = p.id || extractMlvId(p.Link) || p.Nombre;
+    if (id) productsCache.set(id, p);
+  }
+  deepQueueCache = Array.isArray(data[STORAGE_KEYS.DEEP_QUEUE]) ? data[STORAGE_KEYS.DEEP_QUEUE] : [];
+}
+
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(async () => {
+    flushTimer = null;
+    if (productsCache !== null) {
+      await chrome.storage.local.set({ [STORAGE_KEYS.PRODUCTS]: Array.from(productsCache.values()) });
+    }
+    if (deepQueueCache !== null) {
+      await chrome.storage.local.set({ [STORAGE_KEYS.DEEP_QUEUE]: deepQueueCache });
+    }
+  }, FLUSH_DELAY_MS);
+}
+
+/** Idempotent merge into in-memory cache; schedules debounced flush. */
 async function mergeProducts(incoming) {
   if (!Array.isArray(incoming)) return;
-  const data = await chrome.storage.local.get(STORAGE_KEYS.PRODUCTS);
-  const current = Array.isArray(data[STORAGE_KEYS.PRODUCTS]) ? data[STORAGE_KEYS.PRODUCTS] : [];
-  const byId = new Map();
-  for (const p of current) {
-    const id = p.id || extractMlvId(p.Link) || p.Nombre;
-    if (id) byId.set(id, p);
-  }
-  let changed = false;
+  await ensureCacheLoaded();
   for (const p of incoming) {
     if (!p || typeof p !== 'object') continue;
     const id = p.id || extractMlvId(p.Link) || p.Nombre;
     if (!id) continue;
-    const existing = byId.get(id);
-    if (existing) {
-      byId.set(id, { ...existing, ...p, id });
-      changed = true;
-    } else {
-      byId.set(id, { ...p, id });
-      changed = true;
-    }
+    const existing = productsCache.get(id);
+    if (existing) productsCache.set(id, { ...existing, ...p, id });
+    else productsCache.set(id, { ...p, id });
   }
-  if (changed) {
-    await chrome.storage.local.set({ [STORAGE_KEYS.PRODUCTS]: Array.from(byId.values()) });
+  scheduleFlush();
+}
+
+/** Force an immediate flush (used by CLEAR_ALL, EXPORT_CSV, GET_ALL_DATA). */
+async function flushNow() {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  if (productsCache !== null) {
+    await chrome.storage.local.set({ [STORAGE_KEYS.PRODUCTS]: Array.from(productsCache.values()) });
+  }
+  if (deepQueueCache !== null) {
+    await chrome.storage.local.set({ [STORAGE_KEYS.DEEP_QUEUE]: deepQueueCache });
   }
 }
 
 async function setDeepQueue(queue) {
   // Dedup by MLV id (or Link), preserve order of first occurrence.
+  await ensureCacheLoaded();
   const seen = new Set();
   const out = [];
   for (const item of queue) {
@@ -99,7 +140,8 @@ async function setDeepQueue(queue) {
     seen.add(id);
     out.push(item);
   }
-  await chrome.storage.local.set({ [STORAGE_KEYS.DEEP_QUEUE]: out });
+  deepQueueCache = out;
+  scheduleFlush();
 }
 
 /* ------------------------------------------------------------------ */
@@ -141,26 +183,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     case 'GET_ALL_DATA': {
-      chrome.storage.local.get(Object.values(STORAGE_KEYS))
-        .then((data) => {
-          sendResponse({
-            products: Array.isArray(data[STORAGE_KEYS.PRODUCTS]) ? data[STORAGE_KEYS.PRODUCTS] : [],
-            deepQueue: Array.isArray(data[STORAGE_KEYS.DEEP_QUEUE]) ? data[STORAGE_KEYS.DEEP_QUEUE] : [],
-            config: data[STORAGE_KEYS.CONFIG] || DEFAULT_CONFIG,
-            panelVisible: data[STORAGE_KEYS.PANEL_VISIBLE] !== false
-          });
-        })
-        .catch((err) => sendResponse({ success: false, error: String(err) }));
+      (async () => {
+        await flushNow();
+        const data = await chrome.storage.local.get(Object.values(STORAGE_KEYS));
+        sendResponse({
+          products: Array.isArray(data[STORAGE_KEYS.PRODUCTS]) ? data[STORAGE_KEYS.PRODUCTS] : [],
+          deepQueue: Array.isArray(data[STORAGE_KEYS.DEEP_QUEUE]) ? data[STORAGE_KEYS.DEEP_QUEUE] : [],
+          config: data[STORAGE_KEYS.CONFIG] || DEFAULT_CONFIG,
+          panelVisible: data[STORAGE_KEYS.PANEL_VISIBLE] !== false
+        });
+      })().catch((err) => sendResponse({ success: false, error: String(err) }));
       return true;
     }
 
     case 'CLEAR_ALL': {
-      chrome.storage.local.set({
-        [STORAGE_KEYS.PRODUCTS]: [],
-        [STORAGE_KEYS.DEEP_QUEUE]: []
-      })
-        .then(() => sendResponse({ success: true }))
-        .catch((err) => sendResponse({ success: false, error: String(err) }));
+      (async () => {
+        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+        productsCache = new Map();
+        deepQueueCache = [];
+        await chrome.storage.local.set({
+          [STORAGE_KEYS.PRODUCTS]: [],
+          [STORAGE_KEYS.DEEP_QUEUE]: []
+        });
+        sendResponse({ success: true });
+      })().catch((err) => sendResponse({ success: false, error: String(err) }));
       return true;
     }
 
@@ -174,12 +220,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     case 'EXPORT_CSV': {
       // CSV is generated client-side (popup or content) so we just return
       // the products for the caller to format.
-      chrome.storage.local.get(STORAGE_KEYS.PRODUCTS)
-        .then((data) => {
-          const products = Array.isArray(data[STORAGE_KEYS.PRODUCTS]) ? data[STORAGE_KEYS.PRODUCTS] : [];
-          sendResponse({ success: true, products });
-        })
-        .catch((err) => sendResponse({ success: false, error: String(err) }));
+      (async () => {
+        await flushNow();
+        const data = await chrome.storage.local.get(STORAGE_KEYS.PRODUCTS);
+        const products = Array.isArray(data[STORAGE_KEYS.PRODUCTS]) ? data[STORAGE_KEYS.PRODUCTS] : [];
+        sendResponse({ success: true, products });
+      })().catch((err) => sendResponse({ success: false, error: String(err) }));
       return true;
     }
 

@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Análisis Estratégico — ML Scraper VE</title>
+  <link rel="stylesheet" href="analysis.css" />
+  <link rel="icon" href="icons/icon48.png" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <img src="icons/icon48.png" alt="ML" class="topbar-logo" />
+      <div>
+        <h1>Análisis Estratégico</h1>
+        <p class="subtitle">MercadoLibre Venezuela · Porter's Five Forces · FODA · A1 Opportunity List</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button id="btn-refresh" class="btn btn-secondary">↻ Refrescar</button>
+      <button id="btn-export-rankings" class="btn btn-secondary">📊 CSV Rankings</button>
+      <button id="btn-export-a1" class="btn btn-secondary">🏆 CSV A1 List</button>
+      <button id="btn-export-report" class="btn btn-primary">📄 Reporte Markdown</button>
+    </div>
+  </header>
+
+  <div id="loading" class="loading">
+    <div class="spinner"></div>
+    <p>Analizando productos…</p>
+  </div>
+
+  <div id="analysis-content" style="display:none;">
+
+    <!-- Overview stats -->
+    <section class="card">
+      <h2>📊 Resumen General</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <div class="stat-val" id="stat-products">—</div>
+          <div class="stat-lbl">Productos</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="stat-sellers">—</div>
+          <div class="stat-lbl">Vendedores</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="stat-categories">—</div>
+          <div class="stat-lbl">Categorías</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="stat-total-sales">—</div>
+          <div class="stat-lbl">Ventas Totales</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="stat-avg-score">—</div>
+          <div class="stat-lbl">Score Promedio</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="stat-avg-price">—</div>
+          <div class="stat-lbl">Precio Promedio</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="stat-total-revenue">—</div>
+          <div class="stat-lbl">Ingreso Estimado</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="stat-hhi">—</div>
+          <div class="stat-lbl">HHI Concentración</div>
+        </div>
+      </div>
+      <p class="compute-note">Análisis computado en <span id="compute-time">—</span> · <span class="hint">HHI &lt; 0.15 = baja concentración · 0.15-0.25 = media · &gt; 0.25 = alta</span></p>
+    </section>
+
+    <!-- Top Rankings -->
+    <section class="card">
+      <h2>🏆 Top Rankings (Top 20)</h2>
+      <div class="ranking-tabs">
+        <button class="ranking-tab active" data-target="ranking-bySales">Por Ventas</button>
+        <button class="ranking-tab" data-target="ranking-byScore">Por Score</button>
+        <button class="ranking-tab" data-target="ranking-byRevenue">Por Ingresos</button>
+      </div>
+      <div class="ranking-body">
+        <div id="ranking-bySales" class="ranking-panel active"></div>
+        <div id="ranking-byScore" class="ranking-panel"></div>
+        <div id="ranking-byRevenue" class="ranking-panel"></div>
+      </div>
+    </section>
+
+    <!-- Seller concentration -->
+    <section class="card">
+      <h2>🏪 Concentración de Vendedores (Proveedores / Competidores)</h2>
+      <p class="card-hint">Los vendedores con alta participación de mercado son tus posibles <b>proveedores</b> (si mayoristas) o <b>competidores</b> (si minoristas). Los vendedores "Nicho" con 1-2 productos pueden ser proveedores especializados.</p>
+      <div id="seller-list" class="seller-list"></div>
+    </section>
+
+    <!-- Category analysis -->
+    <section class="card">
+      <h2>📦 Análisis por Categoría / Nicho</h2>
+      <p class="card-hint">Categorías con alta demanda y pocos vendedores = <b>océano azul</b> (oportunidad de entrada).</p>
+      <div id="category-list" class="cat-list"></div>
+    </section>
+
+    <!-- Porter's Five Forces -->
+    <section class="card">
+      <h2>⚔️ Porter's Five Forces</h2>
+      <div class="porter-grid">
+        <div class="porter-card" id="porter-rivalry">
+          <div class="porter-header">
+            <span class="porter-icon"></span>
+            <span class="porter-title"></span>
+            <span class="porter-level"></span>
+          </div>
+          <div class="porter-meter"><div class="porter-meter-fill"></div></div>
+          <ul class="porter-factors"></ul>
+        </div>
+        <div class="porter-card" id="porter-newEntrants">
+          <div class="porter-header">
+            <span class="porter-icon"></span>
+            <span class="porter-title"></span>
+            <span class="porter-level"></span>
+          </div>
+          <div class="porter-meter"><div class="porter-meter-fill"></div></div>
+          <ul class="porter-factors"></ul>
+        </div>
+        <div class="porter-card" id="porter-buyerPower">
+          <div class="porter-header">
+            <span class="porter-icon"></span>
+            <span class="porter-title"></span>
+            <span class="porter-level"></span>
+          </div>
+          <div class="porter-meter"><div class="porter-meter-fill"></div></div>
+          <ul class="porter-factors"></ul>
+        </div>
+        <div class="porter-card" id="porter-supplierPower">
+          <div class="porter-header">
+            <span class="porter-icon"></span>
+            <span class="porter-title"></span>
+            <span class="porter-level"></span>
+          </div>
+          <div class="porter-meter"><div class="porter-meter-fill"></div></div>
+          <ul class="porter-factors"></ul>
+        </div>
+        <div class="porter-card" id="porter-substitutes">
+          <div class="porter-header">
+            <span class="porter-icon"></span>
+            <span class="porter-title"></span>
+            <span class="porter-level"></span>
+          </div>
+          <div class="porter-meter"><div class="porter-meter-fill"></div></div>
+          <ul class="porter-factors"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- FODA Matrix -->
+    <section class="card">
+      <h2>📋 FODA (SWOT) — Auto-generado</h2>
+      <div class="foda-grid">
+        <div class="foda-quadrant strengths">
+          <h3>✅ Fortalezas (para entrar)</h3>
+          <ul id="foda-strengths"></ul>
+        </div>
+        <div class="foda-quadrant weaknesses">
+          <h3>⚠️ Debilidades (para entrar)</h3>
+          <ul id="foda-weaknesses"></ul>
+        </div>
+        <div class="foda-quadrant opportunities">
+          <h3>💡 Oportunidades</h3>
+          <ul id="foda-opportunities"></ul>
+        </div>
+        <div class="foda-quadrant threats">
+          <h3>🚨 Amenazas</h3>
+          <ul id="foda-threats"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- A1 List -->
+    <section class="card">
+      <h2>🥇 A1 List — Top 20 Productos para Importar / Revender</h2>
+      <p class="card-hint">
+        Score de oportunidad (0-100) = demanda (35%) + calidad (15%) + mercado no dominado (25%) + precio razonable (15%) + categoría caliente (10%).
+        Los productos con score &gt; 75 son los mejores candidatos para importar y revender.
+      </p>
+      <div id="a1-list" class="a1-list"></div>
+      <div class="export-row">
+        <button id="btn-export-a1" class="btn btn-primary">🏆 Exportar A1 List (CSV)</button>
+        <button id="btn-export-report" class="btn btn-secondary">📄 Exportar Reporte Completo (Markdown)</button>
+      </div>
+    </section>
+
+  </div>
+
+  <script src="analysis.js"></script>
+</body>
+</html>

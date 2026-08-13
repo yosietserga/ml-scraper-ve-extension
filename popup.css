@@ -93,6 +93,7 @@ header h1 {
 .btn-secondary { background: #e6e6e6; color: #333; }
 .btn-success { background: #00a650; color: #fff; }
 .btn-danger { background: #ff5252; color: #fff; }
+.btn-analysis { background: linear-gradient(135deg, #2d3277 0%, #3483fa 100%); color: #fff; font-size: 13px; padding: 11px 12px; }
 
 .hint {
   padding: 0 14px 12px 14px;

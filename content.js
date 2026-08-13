@@ -56,6 +56,10 @@
   let currentBaseSlug = '';
   let currentOffset = 1;
 
+  // Virtualization: only render visible products to avoid DOM death at 5000+
+  let visibleCount = 50;
+  const VISIBLE_INCREMENT = 50;
+
   function computeIsArticlePage() {
     return location.hostname.indexOf('articulo.mercadolibre.com') !== -1;
   }
@@ -123,7 +127,17 @@
   }
 
   // Cross-tab live sync: when another tab (or the popup) modifies storage,
-  // reflect it here immediately.
+  // reflect it here. DEBOUNCED so a crawl that saves 100 pages doesn't
+  // trigger 100 full re-renders (each O(n) at thousands of products).
+  let renderDebounceTimer = null;
+  function debouncedRenderResults() {
+    if (renderDebounceTimer) clearTimeout(renderDebounceTimer);
+    renderDebounceTimer = setTimeout(() => {
+      renderDebounceTimer = null;
+      renderResults();
+    }, 250);
+  }
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     let touched = false;
@@ -139,7 +153,7 @@
       panelVisible = changes[STORAGE_KEY_PANEL].newValue !== false;
       applyPanelVisibility();
     }
-    if (touched) renderResults();
+    if (touched) debouncedRenderResults();
   });
 
   // Toolbar icon "toggle panel" fallback
@@ -167,20 +181,31 @@
   /* ------------------------------------------------------------------ */
 
   let lastPath = location.pathname;
-  let titleObserver = null;
+  let navObserver = null;
   function watchSpaNavigation() {
-    titleObserver = new MutationObserver(() => {
+    // Scope to <title> + <body> childList only — watching documentElement
+    // with subtree:true fires on every DOM mutation (thousands/sec on ML's
+    // SPA), causing the observer callback to run constantly even when the
+    // path hasn't changed. We also poll location.pathname every 500ms as a
+    // fallback for SPAs that don't mutate <title> on route change.
+    const checkNav = () => {
       if (location.pathname !== lastPath) {
         lastPath = location.pathname;
         const wasArticle = isArticlePage;
         isArticlePage = computeIsArticlePage();
         if (wasArticle !== isArticlePage) {
-          // Re-build the modal tabs because the layout depends on this flag.
           rebuildModal();
         }
       }
-    });
-    titleObserver.observe(document.documentElement, { childList: true, subtree: true });
+    };
+    // Lightweight poll — cheaper than a full-subtree MutationObserver
+    setInterval(checkNav, 800);
+    // Also hook into popstate + pushState for immediate response
+    window.addEventListener('popstate', checkNav);
+    const origPushState = history.pushState;
+    const origReplaceState = history.replaceState;
+    history.pushState = function () { const r = origPushState.apply(this, arguments); setTimeout(checkNav, 50); return r; };
+    history.replaceState = function () { const r = origReplaceState.apply(this, arguments); setTimeout(checkNav, 50); return r; };
   }
 
   /* ------------------------------------------------------------------ */
@@ -406,6 +431,17 @@
             <label>Delay Async Fetch (ms):</label>
             <input type="number" id="cfg-delay" value="1200">
           </div>
+          <div class="ml-input-group">
+            <label>Máx. Páginas por Búsqueda (0 = ilimitado):</label>
+            <input type="number" id="cfg-max-pages" value="20">
+          </div>
+          <div class="ml-input-group">
+            <label>Máx. Productos Total (0 = ilimitado):</label>
+            <input type="number" id="cfg-max-products" value="0">
+          </div>
+          <div class="ml-btn-group" style="margin-top: 8px;">
+            <button class="ml-btn ml-btn-purple" id="btn-open-analysis" style="flex:1;">📊 Abrir Análisis Estratégico</button>
+          </div>
           <hr style="border:0; border-top:1px solid #eee; margin:10px 0;">
           <div style="font-size: 11px; font-weight: bold; margin-bottom: 6px; color: #2d3277;">Información Extraída del Vendedor</div>
           <div id="seller-inspection-container">
@@ -470,9 +506,9 @@
 
     // Filter / sort
     const filterInput = document.getElementById('filter-name');
-    if (filterInput) filterInput.addEventListener('input', renderResults);
+    if (filterInput) filterInput.addEventListener('input', () => { visibleCount = 50; renderResults(); });
     const sortSel = document.getElementById('sort-results');
-    if (sortSel) sortSel.addEventListener('change', renderResults);
+    if (sortSel) sortSel.addEventListener('change', () => { visibleCount = 50; renderResults(); });
 
     // Download buttons (may exist in both tabs)
     document.querySelectorAll('#btn-download').forEach((btn) => {
@@ -536,6 +572,17 @@
       btnDeepExtract.onclick = () => {
         if (deepQueue.length === 0) { alert("Selecciona productos con '+ Deep' primero."); return; }
         runAsyncFetchQueue();
+      };
+    }
+
+    const btnOpenAnalysis = document.getElementById('btn-open-analysis');
+    if (btnOpenAnalysis) {
+      btnOpenAnalysis.onclick = () => {
+        try {
+          window.open(chrome.runtime.getURL('analysis.html'), '_blank');
+        } catch (e) {
+          alert('No se pudo abrir el análisis: ' + e.message);
+        }
       };
     }
   }
@@ -739,10 +786,15 @@
     else if (sortVal === 'sales_desc') filtered.sort((a, b) => (b.Ventas || 0) - (a.Ventas || 0));
     else if (sortVal === 'score_desc') filtered.sort((a, b) => (b.Score || 0) - (a.Score || 0));
 
+    // Virtualization: only render the first `visibleCount` items.
+    // At 5000+ products, rendering all cards freezes the browser for seconds.
+    const visible = filtered.slice(0, visibleCount);
+    const remaining = filtered.length - visible.length;
+
     container.innerHTML = '';
 
     const frag = document.createDocumentFragment();
-    filtered.forEach((p) => {
+    visible.forEach((p) => {
       const isSelected = deepQueue.some((dq) => {
         if (typeof dq === 'string') return dq === p.Link || dq === extractMlvId(p.Link) || dq === p.id;
         return dq.id === p.id || dq.Link === p.Link;
@@ -877,6 +929,19 @@
       frag.appendChild(card);
     });
     container.appendChild(frag);
+
+    // Virtualization: "load more" button when there are hidden results
+    if (remaining > 0) {
+      const moreBtn = document.createElement('button');
+      moreBtn.className = 'ml-btn ml-btn-secondary';
+      moreBtn.style.cssText = 'width:100%; margin-top:8px; padding:8px; font-size:11px;';
+      moreBtn.innerText = `Cargar más ${VISIBLE_INCREMENT} (${remaining} restantes de ${filtered.length})`;
+      moreBtn.onclick = () => {
+        visibleCount += VISIBLE_INCREMENT;
+        renderResults();
+      };
+      container.appendChild(moreBtn);
+    }
   }
 
   function removeProductAnimated(cardEl, id) {
@@ -1009,11 +1074,31 @@
 
   async function runCrawler() {
     const delay = parseInt(safeValue('cfg-delay', '1200'), 10) || 1500;
+    const maxPages = parseInt(safeValue('cfg-max-pages', '20'), 10);
+    const maxProducts = parseInt(safeValue('cfg-max-products', '0'), 10);
     if (modal) modal.classList.add('crawling-active');
 
     let safetyCounter = 0;
+    let consecutive429 = 0;
     while (isCrawling && safetyCounter < 5000) {
       safetyCounter++;
+
+      // Max-products limit (0 = unlimited)
+      if (maxProducts > 0 && products.length >= maxProducts) {
+        setDebugger(`[Límite alcanzado]: ${products.length} productos ≥ máximo ${maxProducts}. Deteniendo.`);
+        const statusEl = document.getElementById('ml-status');
+        if (statusEl) statusEl.innerText = `Estado: Límite de ${maxProducts} productos alcanzado`;
+        break;
+      }
+
+      // Max-pages limit (0 = unlimited)
+      if (maxPages > 0 && processedPagesCount >= maxPages) {
+        setDebugger(`[Límite alcanzado]: ${processedPagesCount} páginas ≥ máximo ${maxPages}. Deteniendo.`);
+        const statusEl = document.getElementById('ml-status');
+        if (statusEl) statusEl.innerText = `Estado: Límite de ${maxPages} páginas alcanzado`;
+        break;
+      }
+
       if (isPaused) {
         const statusEl = document.getElementById('ml-status');
         if (statusEl) statusEl.innerText = 'Estado: Pausado';
@@ -1033,11 +1118,31 @@
       processedPagesCount++;
 
       const statusEl = document.getElementById('ml-status');
-      if (statusEl) statusEl.innerText = `Procesando: ${currentSearchProcess.phrase} (Pág. ${processedPagesCount})`;
+      if (statusEl) statusEl.innerText = `Procesando: ${currentSearchProcess.phrase} (Pág. ${processedPagesCount}/${maxPages > 0 ? maxPages : '∞'})`;
       setDebugger(`[Crawling]: ${currentUrl}`);
 
       try {
         const response = await fetch(currentUrl, { credentials: 'include' });
+
+        // HTTP 429 = rate limited — back off and retry
+        if (response.status === 429) {
+          consecutive429++;
+          const backoff = Math.min(30000, 2000 * Math.pow(2, consecutive429));
+          setDebugger(`[HTTP 429]: rate-limited. Backoff ${backoff}ms (intento ${consecutive429}).`);
+          const sEl = document.getElementById('ml-status');
+          if (sEl) sEl.innerText = `Estado: Rate-limited (429), esperando ${(backoff / 1000).toFixed(0)}s...`;
+          // Roll back the page counter so we retry this page
+          processedPagesCount--;
+          visitedUrls.delete(currentUrl);
+          await new Promise((r) => setTimeout(r, backoff));
+          if (consecutive429 >= 5) {
+            setDebugger('[HTTP 429]: 5 intentos fallidos. Deteniendo crawl.');
+            break;
+          }
+          continue;
+        }
+        consecutive429 = 0;
+
         if (!response.ok) {
           setDebugger(`[HTTP ${response.status}]: deteniendo crawl para "${currentSearchProcess.phrase}".`);
           break;

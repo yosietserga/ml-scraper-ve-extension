@@ -1,18 +1,49 @@
-# MercadoLibre VE Scraper — Chrome Extension (v6.0.0)
+# MercadoLibre VE Scraper — Chrome Extension (v6.1.0)
 
-Advanced scraper for **MercadoLibre Venezuela** (`mercadolibre.com.ve`) packaged as a Manifest V3 Chrome extension. Centralized storage, cross-tab live sync, deep article extraction, seller OSINT (Google breakout link in CSV), swipe gestures, and a toolbar popup.
+Advanced scraper for **MercadoLibre Venezuela** (`mercadolibre.com.ve`) packaged as a Manifest V3 Chrome extension. Crawl thousands of products, extract seller data, and generate **strategic business intelligence** — Porter's Five Forces, FODA/SWOT, and an A1 opportunity list of top products to import/resell.
 
-> This is the cleaned-up successor to the v4.0.5 single-file userscript and the (buggy, incomplete) v5.0.0 extension proposed by Gemini. **21 issues were found and fixed** in v5.0.0 — see the [Changelog](#changelog) below.
+> **New in v6.1.0:** Strategic Analysis dashboard, scale fixes (debounced render, virtualized results, background cache, `unlimitedStorage`, HTTP 429 backoff, max-pages/products limits). See [Changelog](#changelog).
+>
+> v6.0.0 was the cleaned-up successor to the v4.0.5 userscript and the (buggy, incomplete) v5.0.0 proposed by Gemini. **21 issues were found and fixed** in v5.0.0.
 
 ---
 
 ## ✨ Features
 
-- **Crawler** with paginated offset navigation, queue of search phrases, pause/resume, and reset.
+### Crawling & Extraction
+- **Crawler** with paginated offset navigation, queue of search phrases, pause/resume, reset.
+- **Max-pages / max-products limits** — stop crawling after N pages or N products (configurable, 0 = unlimited).
+- **HTTP 429 backoff** — exponential retry on rate-limiting (5 attempts, max 30s wait).
 - **Deep extraction** of article pages (title, price, currency, score, sales, location, seller, breadcrumbs, brand/model, full specs table).
 - **Seller OSINT** — every exported product gets a `Google_Breakout_Vendedor` column with a one-click Google search URL targeting the seller's WhatsApp / Instagram / RIF / phone / storefront in Venezuela.
-- **Cross-tab sync** — products and the deep-extraction queue live in `chrome.storage.local`. Open 5 ML tabs, crawl in any of them, see the results update everywhere via `chrome.storage.onChanged`.
-- **Toolbar popup** — at-a-glance stats (products + queue size), show/hide the in-page panel, export CSV, clear all data.
+
+### Strategic Analysis Dashboard 📊 (NEW in v6.1.0)
+- **Top-N Rankings** — top 20 products by sales, by score, or by estimated revenue (price × sales).
+- **Seller Concentration** — HHI, market share, seller classification (Dominant / Supplier / Mid / Niche). Identifies your potential **suppliers** (high-volume, multi-product sellers) and **competitors** (dominant market-share players).
+- **Category / Niche Analysis** — top categories by total sales, with seller counts. Flags **blue oceans** (high demand, few sellers).
+- **Porter's Five Forces** — computed from the data, not vibes:
+  - ⚔️ Rivalry (HHI, seller count, products-per-seller)
+  - 🚪 Threat of new entrants (score barriers, seller saturation)
+  - 🛒 Bargaining power of buyers (price/score variance, product count)
+  - 🏭 Bargaining power of suppliers (seller concentration, top-3 share)
+  - 🔄 Threat of substitutes (products-per-category, price range)
+- **FODA / SWOT Matrix** — auto-generated Strengths, Weaknesses, Opportunities, Threats based on the computed metrics.
+- **A1 Opportunity List** — top 20 products scored on a 0-100 scale:
+  - Demand percentile (35%) — proven sales
+  - Quality percentile (15%) — review scores
+  - Market openness (25%) — 1 minus seller dominance
+  - Price reasonableness (15%) — proximity to median
+  - Category hotness (10%) — in a high-demand category
+- **Export** — CSV rankings, CSV A1 list, and a full Markdown strategic report.
+
+### Architecture
+- **Cross-tab sync** — products and the deep-extraction queue live in `chrome.storage.local` with an in-memory background cache + debounced flush. Open 5 ML tabs, crawl in any, see results everywhere via `chrome.storage.onChanged`.
+- **Virtualized results** — only renders 50 cards at a time with "load more", preventing browser freeze at 5000+ products.
+- **Debounced rendering** — storage changes coalesce within 250ms to avoid render storms during active crawling.
+- **`unlimitedStorage`** permission — no 10MB storage quota limit for large crawls.
+- **Toolbar popup** — stats + show/hide panel + export CSV + clear data + open analysis.
+- **XSS-safe** — all user-controlled strings HTML-escaped.
+- **Blob-based CSV** — handles large datasets without `data:` URI breakage.
 - **Swipe gestures** (touch + mouse) on every result card — swipe left to delete, swipe right to mark for deep extraction.
 - **Preview card** on image hover with full product details.
 - **Notification sound** (Web Audio synth) when crawl or deep extraction finishes.
@@ -28,9 +59,12 @@ Advanced scraper for **MercadoLibre Venezuela** (`mercadolibre.com.ve`) packaged
 
 ```
 ml-scraper-extension/
-├── manifest.json              MV3 manifest, permissions, action popup
-├── background.js              Service worker — single source of truth
-├── content.js                 In-page UI + crawler + swipe + deep extraction
+├── manifest.json              MV3 manifest, permissions, action popup, unlimitedStorage
+├── background.js              Service worker — in-memory cache + debounced flush
+├── content.js                 In-page UI + crawler + swipe + deep extraction + virtualized results
+├── analysis.html              Strategic analysis dashboard page
+├── analysis.css               Analysis dashboard styles
+├── analysis.js                Porter's 5F + FODA + A1 scoring engine
 ├── popup.html                 Toolbar popup markup
 ├── popup.css                  Toolbar popup styles
 ├── popup.js                   Toolbar popup logic
@@ -41,6 +75,7 @@ ml-scraper-extension/
 │   └── icon128.png
 ├── legacy/
 │   └── userscript-v4.0.5.js   Original 925-line single-file userscript (reference)
+├── LICENSE
 └── README.md
 ```
 
@@ -132,6 +167,29 @@ The content script can't `fetch()` article pages directly because ML's CORS poli
 ---
 
 ## 🐛 Changelog
+
+### v6.1.0 — Strategic Analysis + Scale Fixes
+
+**New features:**
+- ✅ **Strategic Analysis Dashboard** (`analysis.html`) — full-page dashboard opened from the popup or the content panel. Computes from crawled data:
+  - Top-N rankings (by sales / score / revenue)
+  - Seller concentration (HHI, market share, supplier/competitor classification)
+  - Category/niche analysis (blue ocean detection)
+  - Porter's Five Forces (computed from HHI, variance, seller counts)
+  - FODA/SWOT matrix (auto-generated bullet points)
+  - A1 Opportunity List (top 20 products, scored 0-100)
+- ✅ **Export** — CSV rankings, CSV A1 list, Markdown strategic report.
+- ✅ **Max-pages / max-products limits** — configurable in the Filtros & Config tab (default: 20 pages, 0 products = unlimited). Prevents over-crawling when you just want top-N.
+- ✅ **HTTP 429 backoff** — exponential retry (2s → 4s → 8s → 16s → 30s, max 5 attempts) with status display. Previously the crawler just broke on rate-limiting.
+
+**Scale fixes (cold-run audit findings):**
+- ✅ **Virtualized results** — only renders 50 cards at a time with "load more" button. At 5000+ products, the old full-render froze the browser for seconds; now it's instant.
+- ✅ **Debounced `renderResults`** — storage `onChanged` events coalesce within 250ms. A crawl that saves 100 pages no longer triggers 100 full re-renders.
+- ✅ **Background in-memory cache** — the service worker keeps a `Map<id, product>` cache + debounced 400ms flush. Previously every `SAVE_PRODUCTS` message re-read ALL products from storage (O(n) per save × 100 saves = O(n²) I/O).
+- ✅ **`unlimitedStorage` permission** — removes the default 10MB `chrome.storage.local` quota. At ~1KB/product, 10MB = ~10K product limit; now unlimited.
+- ✅ **Fixed O(n²) A1 percentile bug** — the cold-run found the opportunity scoring took 6 seconds for 5000 products (linear scan per product). Fixed with pre-sorted arrays + binary search → 14ms for 5000 products (420x speedup), 23ms for 10000.
+- ✅ **Scoped SPA navigation observer** — replaced the `MutationObserver` on `document.documentElement` (which fired on every DOM mutation, thousands/sec on ML's SPA) with a lightweight `setInterval` poll + `pushState`/`replaceState` hooks.
+- ✅ **Reset `visibleCount` on filter/sort change** — prevents stale pagination state.
 
 ### v6.0.0 — Fixed & complete
 
