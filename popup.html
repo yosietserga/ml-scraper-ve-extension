@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ML Scraper VE</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <img src="icons/icon48.png" alt="ML" class="logo" />
+    <div>
+      <h1>MercadoLibre VE Scraper</h1>
+      <p class="version">v6.0.0</p>
+    </div>
+  </header>
+
+  <section class="stats">
+    <div class="stat-card">
+      <span class="stat-value" id="stat-products">—</span>
+      <span class="stat-label">Productos guardados</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-value" id="stat-queue">—</span>
+      <span class="stat-label">Cola de extracción</span>
+    </div>
+  </section>
+
+  <section class="actions">
+    <button id="btn-show" class="btn btn-primary">Mostrar panel en pestaña actual</button>
+    <button id="btn-hide" class="btn btn-secondary">Ocultar panel</button>
+    <button id="btn-export" class="btn btn-success">Descargar CSV</button>
+    <button id="btn-clear" class="btn btn-danger">Borrar todos los datos</button>
+  </section>
+
+  <section class="hint">
+    <p>Abre <code>mercadolibre.com.ve</code> y haz clic en "Mostrar panel". El panel también aparece automáticamente en cualquier página de MercadoLibre VE.</p>
+    <p>Los datos se sincronizan entre todas las pestañas abiertas automáticamente.</p>
+  </section>
+
+  <footer>
+    <a href="https://github.com/yosietserga/ml-scraper-ve-extension" target="_blank" rel="noopener">Ver en GitHub →</a>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>

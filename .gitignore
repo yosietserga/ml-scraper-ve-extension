@@ -1,0 +1,16 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+*.swp
+
+# Node (only if you add a build step later)
+node_modules/
+package-lock.json
+bun.lockb
+
+# Test artifacts
+tests/*.csv
+/tmp/
