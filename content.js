@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.6.1';
+  const EXT_VERSION = '6.7.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -1829,10 +1829,9 @@
     const delay = parseInt(safeValue('cfg-delay', '1200'), 10) || 1200;
 
     // v6.6.0: reset visits 4xx counter at the start of each deep-extraction run
-    // (but keep visitsDisabled flag if it was set in a previous run this session)
     visitsConsecutive4xx = 0;
 
-    logActivity('DEEP_START', `Deep extraction started: ${deepQueue.length} products in queue, visits=${visitsDisabled ? 'DISABLED' : 'enabled'}`, 'info');
+    logActivity('DEEP_START', `Deep extraction started: ${deepQueue.length} products in queue (API mode)`, 'info');
 
     let processed = 0;
     let successCount = 0;
@@ -1842,46 +1841,93 @@
       const current = deepQueue[0];
       const rawLink = typeof current === 'string' ? current : current.Link;
       const mlvId = extractMlvId(rawLink) || rawLink;
-      // v6.5.1: use cleanPermalink so the fetch URL doesn't have tracking junk
-      const fetchTargetUrl = rawLink && /^https?:\/\//i.test(rawLink)
-        ? cleanPermalink(rawLink)
-        : `https://articulo.mercadolibre.com.ve/${mlvId}`;
       processed++;
 
       const statusEl = document.getElementById('ml-status');
-      if (statusEl) statusEl.innerText = `Background Fetch: ${mlvId}... (${deepQueue.length} restantes, ${successCount} ok, ${failCount} fail)`;
-      setDebugger(`[Deep fetch ${processed}/${deepQueue.length + processed - 1}]: ${fetchTargetUrl}`);
-      // v6.6.0: log each deep fetch attempt
-      logActivity('DEEP_FETCH', `[${processed}] Fetching ${mlvId}: ${fetchTargetUrl}`, 'info');
+      if (statusEl) statusEl.innerText = `API Fetch: ${mlvId}... (${deepQueue.length} restantes, ${successCount} ok, ${failCount} fail)`;
+      logActivity('DEEP_FETCH', `[${processed}] Fetching ${mlvId} via ML API`, 'info');
 
       try {
-        const response = await sendMessage({ action: 'FETCH_ARTICLE', url: fetchTargetUrl });
-        // v6.6.0: log fetch response
-        if (!response || !response.success) {
-          const errMsg = response && response.error ? response.error : 'sin respuesta del background SW';
-          logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: FETCH FAILED — ${errMsg}`, 'error');
-          setDebugger('[Deep fetch error]: ' + errMsg);
-          failCount++;
-        } else if (!response.html || response.html.length < 1000) {
-          // v6.6.0: suspiciously short HTML — likely anti-bot or error page
-          const htmlPreview = (response.html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 200);
-          logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: HTML too short (${response.html ? response.html.length : 0} chars). Anti-bot/error page?\n  Preview: ${htmlPreview}`, 'error');
-          setDebugger(`[Deep fetch]: ${mlvId} HTML sospechosamente corto (${response.html ? response.html.length : 0} chars)`);
+        // v6.7.0: use ML API instead of HTML scraping.
+        // Article pages are SPAs — fetch() returns a 24KB shell without data.
+        // The ML API /items/{id} returns structured JSON with everything.
+        const itemResponse = await sendMessage({ action: 'FETCH_ITEM', itemId: mlvId });
+
+        if (!itemResponse || !itemResponse.success) {
+          const errMsg = itemResponse && itemResponse.error ? itemResponse.error : 'sin respuesta del background SW';
+          logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: API FAILED — ${errMsg}`, 'error');
           failCount++;
         } else {
-          logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: FETCH OK, HTML=${response.html.length} chars, parsing...`, 'info');
-          const parser = new DOMParser();
-          const doc = parser.parseFromString(response.html, 'text/html');
-          const extracted = parseArticleDocument(doc, response.finalUrl || fetchTargetUrl);
+          const item = itemResponse.item;
+          logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: API OK, title="${(item.title || '').substring(0, 40)}", price=${item.price}, seller_id=${item.seller_id}`, 'info');
 
-          // v6.6.0: log what was extracted
-          logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: parsed — title="${(extracted.Nombre || '').substring(0, 40)}", price=${extracted.Precio_Numerico}, score=${extracted.Score}, seller="${(extracted.Vendedor_Nombre || '').substring(0, 25)}", reviews=${extracted.Opiniones || 0}`, 'info');
+          // Build product from API JSON
+          const extracted = buildProductFromAPI(item, mlvId);
 
-          // v6.6.0: detect if extraction actually got real data
-          if (!extracted.Nombre || extracted.Nombre === 'N/A' || extracted.Precio_Numerico === 0) {
-            logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: extraction yielded empty/garbage data. Selectors may be outdated.`, 'warn');
+          // Fetch reviews (score + review count) — separate API call
+          const reviewsResponse = await sendMessage({ action: 'FETCH_ITEM_REVIEWS', itemId: mlvId });
+          if (reviewsResponse && reviewsResponse.success && reviewsResponse.reviews) {
+            const rev = reviewsResponse.reviews;
+            extracted.Score = rev.rating_average || 0;
+            extracted.Opiniones = rev.total || 0;
+            logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: reviews — score=${extracted.Score}, count=${extracted.Opiniones}`, 'info');
+          } else {
+            logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: reviews fetch failed — ${reviewsResponse ? reviewsResponse.error : 'no response'}`, 'warn');
           }
 
+          // Fetch seller info (name, reputation, sales) — separate API call
+          if (item.seller_id) {
+            const sellerResponse = await sendMessage({ action: 'FETCH_SELLER', sellerId: item.seller_id });
+            if (sellerResponse && sellerResponse.success && sellerResponse.seller) {
+              const s = sellerResponse.seller;
+              extracted.Vendedor_Nombre = s.nickname || s.first_name || 'N/A';
+              // Seller status/reputation
+              if (s.seller_reputation) {
+                const rep = s.seller_reputation;
+                extracted.Vendedor_Estatus = rep.level_id || (rep.power_seller_status ? rep.power_seller_status : 'N/A');
+                if (rep.transactions && rep.transactions.total !== undefined) {
+                  extracted.Vendedor_Ventas = String(rep.transactions.total);
+                }
+                if (rep.metrics && rep.metrics.sales && rep.metrics.sales.completed) {
+                  extracted.Vendedor_Ventas = String(rep.metrics.sales.completed);
+                }
+              }
+              extracted.Vendedor_AniosML = s.registration_date ? new Date(s.registration_date).getFullYear() + '' : 'N/A';
+              logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: seller — name="${extracted.Vendedor_Nombre}", status="${extracted.Vendedor_Estatus}", sales=${extracted.Vendedor_Ventas}`, 'info');
+            } else {
+              logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: seller fetch failed — ${sellerResponse ? sellerResponse.error : 'no response'}`, 'warn');
+            }
+          }
+
+          // Fetch visits (if not disabled)
+          if (!visitsDisabled) {
+            try {
+              const visitResponse = await sendMessage({ action: 'FETCH_VISITS', itemId: mlvId });
+              if (visitResponse && visitResponse.success) {
+                visitsConsecutive4xx = 0;
+                extracted.Visitas = visitResponse.visits || 0;
+                logActivity('VISIT_API', `[${processed}] ${mlvId}: ${extracted.Visitas} visitas en 10 días`, 'info');
+              } else if (visitResponse && visitResponse.error) {
+                const is4xx = visitResponse.error.indexOf('HTTP 4') !== -1;
+                if (is4xx) {
+                  visitsConsecutive4xx++;
+                  logActivity('VISIT_API', `[${processed}] ${mlvId}: ${visitResponse.error} (consecutive 4xx: ${visitsConsecutive4xx}/${VISITS_4XX_THRESHOLD})`, 'warn');
+                  if (visitsConsecutive4xx >= VISITS_4XX_THRESHOLD) {
+                    visitsDisabled = true;
+                    logActivity('VISIT_API', `Visits API DISABLED after ${visitsConsecutive4xx} consecutive 4xx errors.`, 'error');
+                  }
+                } else {
+                  logActivity('VISIT_API', `[${processed}] ${mlvId}: ${visitResponse.error}`, 'warn');
+                }
+              }
+            } catch (visitErr) {
+              logActivity('VISIT_API', `[${processed}] ${mlvId}: exception — ${visitErr.message}`, 'error');
+            }
+          }
+
+          logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: FINAL — title="${(extracted.Nombre || '').substring(0, 40)}", price=${extracted.Precio_Numerico}, score=${extracted.Score}, reviews=${extracted.Opiniones}, seller="${(extracted.Vendedor_Nombre || '').substring(0, 25)}"`, 'info');
+
+          // Merge into products
           const existingIdx = products.findIndex((p) => extractMlvId(p.Link) === mlvId || p.id === mlvId);
           if (existingIdx >= 0) {
             products[existingIdx] = { ...products[existingIdx], ...extracted, id: products[existingIdx].id };
@@ -1892,47 +1938,10 @@
           }
           await persistProducts();
           successCount++;
-
-          // v6.6.0: fetch real visit count — but skip if disabled after 3 consecutive 4xx
-          if (visitsDisabled) {
-            // Already disabled this session — skip silently
-          } else {
-            try {
-              const visitResponse = await sendMessage({ action: 'FETCH_VISITS', itemId: mlvId });
-              if (visitResponse && visitResponse.success) {
-                visitsConsecutive4xx = 0;  // reset on success
-                const idx = products.findIndex((p) => extractMlvId(p.Link) === mlvId || p.id === mlvId);
-                if (idx >= 0) {
-                  products[idx].Visitas = visitResponse.visits || 0;
-                  await persistProducts();
-                }
-                logActivity('VISIT_API', `[${processed}] ${mlvId}: ${visitResponse.visits || 0} visitas en 10 días`, 'info');
-                setDebugger(`[Visitas ${mlvId}]: ${visitResponse.visits || 0} visitas en 10 días`);
-              } else if (visitResponse && visitResponse.error) {
-                // v6.6.0: check for 4xx and increment consecutive counter
-                const is4xx = visitResponse.error.indexOf('HTTP 4') !== -1;
-                if (is4xx) {
-                  visitsConsecutive4xx++;
-                  logActivity('VISIT_API', `[${processed}] ${mlvId}: ${visitResponse.error} (consecutive 4xx: ${visitsConsecutive4xx}/${VISITS_4XX_THRESHOLD})`, 'warn');
-                  if (visitsConsecutive4xx >= VISITS_4XX_THRESHOLD) {
-                    visitsDisabled = true;
-                    logActivity('VISIT_API', `Visits API DISABLED after ${visitsConsecutive4xx} consecutive 4xx errors. Skipping visits for the rest of this session. Check your access token.`, 'error');
-                  }
-                } else {
-                  logActivity('VISIT_API', `[${processed}] ${mlvId}: ${visitResponse.error}${visitResponse.body ? ' — ' + visitResponse.body.substring(0, 100) : ''}`, 'warn');
-                }
-                setDebugger(`[Visitas ${mlvId} error]: ${visitResponse.error}`);
-              }
-            } catch (visitErr) {
-              logActivity('VISIT_API', `[${processed}] ${mlvId}: exception — ${visitErr.message}`, 'error');
-              setDebugger(`[Visitas ${mlvId} exception]: ${visitErr.message}`);
-            }
-          }
         }
       } catch (err) {
         const errMsg = err && err.message ? err.message : String(err);
         logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: EXCEPTION — ${errMsg}`, 'error');
-        setDebugger('[Deep fetch exception]: ' + errMsg);
         failCount++;
       }
 
@@ -1954,6 +1963,95 @@
       setTimeout(() => { if (banner) banner.style.display = 'none'; }, 4000);
     }
     playNotificationSound();
+  }
+
+  /** v6.7.0: Build a product object from the ML Items API JSON response.
+   *  Maps API fields to our internal product schema.
+   */
+  function buildProductFromAPI(item, mlvId) {
+    // Price + currency
+    const price = item.price || 0;
+    const currencyId = item.currency_id || '';
+    const currency = currencyId === 'USD' ? 'USD' : currencyId === 'VES' ? 'VES' : currencyId;
+
+    // Image — first picture, or fall back to thumbnail
+    let image = '';
+    if (Array.isArray(item.pictures) && item.pictures.length > 0) {
+      image = item.pictures[0].url || item.pictures[0].secure_url || '';
+    } else if (item.thumbnail) {
+      image = item.thumbnail;
+    }
+
+    // Location
+    let location = 'No especificada';
+    if (item.seller_address) {
+      const parts = [];
+      if (item.seller_address.city && item.seller_address.city.name) parts.push(item.seller_address.city.name);
+      if (item.seller_address.state && item.seller_address.state.name) parts.push(item.seller_address.state.name);
+      if (parts.length) location = parts.join(', ');
+    }
+
+    // Specs — from attributes array
+    const specList = [];
+    let brand = 'N/A';
+    let model = 'N/A';
+    if (Array.isArray(item.attributes)) {
+      for (const attr of item.attributes) {
+        const key = attr.name || attr.id || '';
+        const val = attr.value_name || '';
+        if (key && val) {
+          const keyL = key.toLowerCase();
+          if (keyL === 'marca' || attr.id === 'BRAND') brand = val;
+          if (keyL === 'modelo' || attr.id === 'MODEL') model = val;
+          specList.push(`${key}: ${val}`);
+        }
+      }
+    }
+
+    // Free shipping
+    const isFreeShipping = item.shipping && item.shipping.free_shipping ? true : false;
+
+    // Sales — from sold_quantity
+    const salesCount = item.sold_quantity || 0;
+
+    // Categories — from category_id (can't get full breadcrumb without another API call)
+    const categories = item.category_id || 'N/A';
+
+    // Google breakout URL for seller OSINT
+    const sellerName = item.seller_id ? `seller_${item.seller_id}` : 'Desconocido';
+    const googleQuery = encodeURIComponent(`"${sellerName}" Venezuela (whatsapp OR instagram OR rif OR telefono OR tienda)`);
+    const googleBreakoutUrl = `https://www.google.com/search?q=${googleQuery}`;
+
+    // Permalink
+    const permalink = item.permalink || cleanPermalink(`https://articulo.mercadolibre.com.ve/${mlvId}`);
+
+    return {
+      id: mlvId,
+      Nombre: item.title || '',
+      Precio_Numerico: price,
+      Moneda: currency,
+      Score: 0,                    // populated by reviews API call
+      Opiniones: 0,                 // populated by reviews API call
+      Ventas: salesCount,
+      EnvioGratis: isFreeShipping ? 'Sí' : 'No',
+      Imagen: image,
+      Link: permalink,
+      Categorias: categories,
+      Ubicacion: location,
+      Marca: brand,
+      Modelo: model,
+      Especificaciones: specList.join(' | '),
+      Vendedor_Nombre: 'N/A',      // populated by seller API call
+      Vendedor_Estatus: 'N/A',
+      Vendedor_Seguidores: 'N/A',
+      Vendedor_Productos: 'N/A',
+      Vendedor_Ventas: 'N/A',
+      Vendedor_Recomendacion: 'N/A',
+      Vendedor_AniosML: 'N/A',
+      Google_Breakout_Vendedor: googleBreakoutUrl,
+      Visitas: 0,                  // populated by visits API call
+      DeepExtracted: true
+    };
   }
 
   /* ------------------------------------------------------------------ */

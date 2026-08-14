@@ -226,6 +226,79 @@ async function fetchVisits(itemId, accessToken) {
 }
 
 /* ------------------------------------------------------------------ */
+/* ML Items API proxy (v6.7.0)                                        */
+/*                                                                    */
+/* Article pages on articulo.mercadolibre.com.ve are SPAs — fetch()   */
+/* returns a 24KB HTML shell without product data. The ML API         */
+/* /items/{id} returns structured JSON with everything we need.       */
+/*                                                                    */
+/* Endpoints:                                                         */
+/*   GET /items/{id}            → title, price, seller, specs, pics   */
+/*   GET /items/{id}/reviews    → rating_average, total reviews        */
+/*   GET /users/{seller_id}     → seller nickname, reputation, sales  */
+/* ------------------------------------------------------------------ */
+
+async function fetchItem(itemId, accessToken) {
+  if (!itemId) return { success: false, error: 'No item id' };
+  const url = `https://api.mercadolibre.com/items/${encodeURIComponent(itemId)}`;
+  const headers = {};
+  if (accessToken && typeof accessToken === 'string' && accessToken.trim()) {
+    headers['Authorization'] = 'Bearer ' + accessToken.trim();
+  }
+  try {
+    const response = await fetch(url, { headers, credentials: 'omit' });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return { success: false, error: 'HTTP ' + response.status, body: text };
+    }
+    const data = await response.json();
+    return { success: true, item: data };
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+async function fetchItemReviews(itemId, accessToken) {
+  if (!itemId) return { success: false, error: 'No item id' };
+  const url = `https://api.mercadolibre.com/items/${encodeURIComponent(itemId)}/reviews`;
+  const headers = {};
+  if (accessToken && typeof accessToken === 'string' && accessToken.trim()) {
+    headers['Authorization'] = 'Bearer ' + accessToken.trim();
+  }
+  try {
+    const response = await fetch(url, { headers, credentials: 'omit' });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return { success: false, error: 'HTTP ' + response.status, body: text };
+    }
+    const data = await response.json();
+    return { success: true, reviews: data };
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+async function fetchSeller(sellerId, accessToken) {
+  if (!sellerId) return { success: false, error: 'No seller id' };
+  const url = `https://api.mercadolibre.com/users/${encodeURIComponent(sellerId)}`;
+  const headers = {};
+  if (accessToken && typeof accessToken === 'string' && accessToken.trim()) {
+    headers['Authorization'] = 'Bearer ' + accessToken.trim();
+  }
+  try {
+    const response = await fetch(url, { headers, credentials: 'omit' });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return { success: false, error: 'HTTP ' + response.status, body: text };
+    }
+    const data = await response.json();
+    return { success: true, seller: data };
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Message router                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -282,6 +355,37 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const tokenData = await chrome.storage.local.get(STORAGE_KEYS.ACCESS_TOKEN);
         const token = tokenData[STORAGE_KEYS.ACCESS_TOKEN] || '';
         const result = await fetchVisits(request.itemId, token);
+        sendResponse(result);
+      })().catch((err) => sendResponse({ success: false, error: String(err) }));
+      return true;
+    }
+
+    // v6.7.0: ML Items API — replaces HTML scraping for article data
+    case 'FETCH_ITEM': {
+      (async () => {
+        const tokenData = await chrome.storage.local.get(STORAGE_KEYS.ACCESS_TOKEN);
+        const token = tokenData[STORAGE_KEYS.ACCESS_TOKEN] || '';
+        const result = await fetchItem(request.itemId, token);
+        sendResponse(result);
+      })().catch((err) => sendResponse({ success: false, error: String(err) }));
+      return true;
+    }
+
+    case 'FETCH_ITEM_REVIEWS': {
+      (async () => {
+        const tokenData = await chrome.storage.local.get(STORAGE_KEYS.ACCESS_TOKEN);
+        const token = tokenData[STORAGE_KEYS.ACCESS_TOKEN] || '';
+        const result = await fetchItemReviews(request.itemId, token);
+        sendResponse(result);
+      })().catch((err) => sendResponse({ success: false, error: String(err) }));
+      return true;
+    }
+
+    case 'FETCH_SELLER': {
+      (async () => {
+        const tokenData = await chrome.storage.local.get(STORAGE_KEYS.ACCESS_TOKEN);
+        const token = tokenData[STORAGE_KEYS.ACCESS_TOKEN] || '';
+        const result = await fetchSeller(request.sellerId, token);
         sendResponse(result);
       })().catch((err) => sendResponse({ success: false, error: String(err) }));
       return true;
