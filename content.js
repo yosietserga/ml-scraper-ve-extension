@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.6.0';
+  const EXT_VERSION = '6.6.1';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -765,24 +765,25 @@
     return m ? m[0].replace(/[-_]/g, '').toUpperCase() : null;
   }
 
-  /** v6.5.1: Clean a MercadoLibre permalink URL.
+  /** v6.6.1: Clean a MercadoLibre permalink URL.
    *  - Strips URL fragment (#tracking_junk...) and query params
-   *  - Normalizes MLV-XXXX to MLVXXXX (no hyphen) in the path
-   *  - Returns just the canonical article URL:
-   *    https://articulo.mercadolibre.com.ve/MLV577501252-product-name-_JM
+   *  - PRESERVES the original MLV-XXXX format in the path (ML serves URLs
+   *    with the hyphen: https://articulo.mercadolibre.com.ve/MLV-838797492-...-_JM)
+   *  - The API call (extractMlvId) strips the hyphen separately — that's
+   *    correct for the visits endpoint which wants MLV838797492 without hyphen
+   *  - Returns the canonical article URL without tracking:
+   *    https://articulo.mercadolibre.com.ve/MLV-838797492-kz-edx-pro-x-...-_JM
    */
   function cleanPermalink(url) {
     if (!url) return '';
     try {
       const u = new URL(url);
-      // Strip fragment and query — ML articles don't need them
-      // Normalize MLV-XXXX → MLVXXXX in pathname (v6.5.0 id format)
-      const cleanPath = u.pathname.replace(/MLV[-_](\d+)/i, 'MLV$1');
-      return u.origin + cleanPath;
+      // Strip fragment and query — ML articles don't need them.
+      // Do NOT normalize the MLV id — keep MLV-XXXX as ML serves it.
+      return u.origin + u.pathname;
     } catch (e) {
       // Fallback: strip # and ? manually
-      return String(url).split('#')[0].split('?')[0]
-        .replace(/MLV[-_](\d+)/i, 'MLV$1');
+      return String(url).split('#')[0].split('?')[0];
     }
   }
 
