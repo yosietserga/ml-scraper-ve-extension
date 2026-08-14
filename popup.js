@@ -100,17 +100,30 @@
       toast('No hay productos para exportar');
       return;
     }
+    // v6.4.0: filter garbage (name empty/MercadoLibre or price 0) + remove Moneda + Precio_Detallado
+    const validProducts = r.products.filter((p) => {
+      const name = (p.Nombre || '').toLowerCase();
+      return name &&
+        name !== 'mercadolibre' &&
+        name !== 'mercado libre' &&
+        name.indexOf('hubo un error') === -1 &&
+        name.indexOf('ingresa a tu cuenta') === -1 &&
+        (p.Precio_Numerico || 0) > 0;
+    });
+    if (validProducts.length === 0) {
+      toast('Todos los productos fueron filtrados (basura)');
+      return;
+    }
     // Generate CSV here in the popup context (has DOM access).
     const headers = [
-      'Nombre', 'Precio_Numerico', 'Moneda', 'Precio_Detallado', 'Score', 'Ventas_Estimadas',
+      'Nombre', 'Precio_Numerico', 'Score', 'Ventas_Estimadas',
       'Visitas_10dias',
       'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Ubicacion_Tienda',
       'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
     ];
     const cell = (v) => '"' + (v === null || v === undefined ? '' : String(v)).replace(/"/g, '""') + '"';
-    const rows = r.products.map((p) => [
-      cell(p.Nombre), cell(p.Precio_Numerico || 0), cell(p.Moneda || 'N/A'),
-      cell(p.Precio_Detallado || ''), cell(p.Score || 0), cell(p.Ventas || 0),
+    const rows = validProducts.map((p) => [
+      cell(p.Nombre), cell(p.Precio_Numerico || 0), cell(p.Score || 0), cell(p.Ventas || 0),
       cell(p.Visitas || 0),
       cell(p.EnvioGratis || 'No'), cell(p.Vendedor_Nombre || 'N/A'),
       cell(p.Vendedor_Estatus || 'N/A'), cell(p.Ubicacion || 'N/A'),

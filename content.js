@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.3.0';
+  const EXT_VERSION = '6.4.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -481,6 +481,16 @@
           </div>
         </div>
       </div>
+      <!-- v6.4.0: Error log panel (collapsible) -->
+      <div id="ml-error-log-panel" style="border-top:1px solid #ddd; background:#1a1a2e; color:#eee;">
+        <div id="ml-error-log-header" style="padding:6px 14px; cursor:pointer; font-size:11px; font-weight:bold; display:flex; justify-content:space-between; align-items:center;">
+          <span>📋 Log de Errores / Debug</span>
+          <span><span id="ml-error-count" style="background:#ff5252; color:#fff; padding:1px 6px; border-radius:8px; font-size:9px; margin-right:6px;">0</span><span id="ml-error-toggle" style="font-size:10px;">▼</span></span>
+        </div>
+        <div id="ml-error-log-body" style="padding:8px 14px; max-height:120px; overflow-y:auto; font-family:monospace; font-size:9px; line-height:1.5; display:none;">
+          <span style="color:#666; font-size:10px;">Sin errores registrados.</span>
+        </div>
+      </div>
     `;
   }
 
@@ -533,6 +543,19 @@
         panelVisible = false;
         sendMessage({ action: 'SET_PANEL_VISIBLE', visible: false });
         applyPanelVisibility();
+      };
+    }
+
+    // v6.4.0: error log toggle
+    const errorLogHeader = document.getElementById('ml-error-log-header');
+    if (errorLogHeader) {
+      errorLogHeader.onclick = () => {
+        const body = document.getElementById('ml-error-log-body');
+        const toggle = document.getElementById('ml-error-toggle');
+        if (!body) return;
+        const isOpen = body.style.display !== 'none';
+        body.style.display = isOpen ? 'none' : 'block';
+        if (toggle) toggle.textContent = isOpen ? '▼' : '▲';
       };
     }
 
@@ -775,6 +798,44 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Error log (v6.4.0)                                                 */
+  /*                                                                    */
+  /* Visible log of HTTP 4xx/5xx errors, selector misses, fetch         */
+  /* failures, etc. Shown in a collapsible panel at the bottom of the   */
+  /* modal so the user can debug issues.                                */
+  /* ------------------------------------------------------------------ */
+
+  const errorLog = [];          // {ts, type, message}
+  const MAX_LOG_ENTRIES = 200;
+
+  function logError(type, message) {
+    const entry = { ts: new Date().toISOString().substring(11, 19), type, message: String(message).substring(0, 300) };
+    errorLog.push(entry);
+    if (errorLog.length > MAX_LOG_ENTRIES) errorLog.shift();
+    console.warn('[ML Scraper][' + type + ']', message);
+    renderErrorLog();
+  }
+
+  function renderErrorLog() {
+    const container = document.getElementById('ml-error-log-body');
+    if (!container) return;
+    if (errorLog.length === 0) {
+      container.innerHTML = '<span style="color:#666; font-size:10px;">Sin errores registrados.</span>';
+      return;
+    }
+    container.innerHTML = errorLog.slice(-30).reverse().map((e) => {
+      const typeColor = e.type.indexOf('HTTP 4') !== -1 || e.type.indexOf('HTTP 5') !== -1 ? '#ff9800'
+        : e.type.indexOf('PARSE') !== -1 ? '#e91e63'
+        : e.type.indexOf('VISIT') !== -1 ? '#9c27b0'
+        : '#ff5252';
+      return `<div class="ml-error-entry"><span style="color:#888;">${e.ts}</span> <span style="color:${typeColor}; font-weight:bold;">[${escapeHtml(e.type)}]</span> ${escapeHtml(e.message)}</div>`;
+    }).join('');
+    // Update the badge count
+    const badge = document.getElementById('ml-error-count');
+    if (badge) badge.textContent = errorLog.length;
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Search-results page parser                                       */
   /* ------------------------------------------------------------------ */
 
@@ -782,25 +843,78 @@
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
 
-    const items = doc.querySelectorAll('.ui-search-results li.ui-search-layout__item');
+    // v6.4.0: try multiple selector variants for each field. ML frequently
+    // changes their DOM structure, so we try the old selectors first, then
+    // fall back to common alternatives.
+    const items = doc.querySelectorAll(
+      '.ui-search-results li.ui-search-layout__item, ' +
+      'li.ui-search-layout__item, ' +
+      '.ui-search-layout__item, ' +
+      '.ui-search-result__wrapper, ' +
+      '[data-testid="results-item"]'
+    );
     const minScore = parseFloat(safeValue('cfg-score', 0)) || 0;
     const minSales = parseInt(safeValue('cfg-sales', 0), 10) || 0;
     const requireFreeShipping = safeValue('cfg-shipping', 'false') === 'true';
 
     let countOnPage = 0;
+    let garbageFiltered = 0;
     const incoming = [];
+
+    if (items.length === 0) {
+      // v6.4.0: log when selectors find nothing — helps debug ML DOM changes
+      logError('PARSE_PAGE', '0 items found on page. Selectors may be outdated or page is anti-bot/login redirect. URL: ' + (doc.title || '').substring(0, 80));
+    }
 
     items.forEach((item) => {
       countOnPage++;
-      const nameEl = item.querySelector('h3');
-      const imgEl = item.querySelector('img[data-id]');
-      const priceEl = item.querySelector('.poly-price__amount');
-      const reviewsEl = item.querySelector('.poly-component__review-compacted + .andes-visually-hidden');
-      const shippingEl = item.querySelector('.poly-component__shipping-v2 .andes-visually-hidden');
-      const linkEl = item.querySelector('a.poly-component__title') || item.querySelector('a');
+      // v6.4.0: try multiple selectors for each field
+      const nameEl = queryFirst(item, [
+        'h2.ui-search-item__title',
+        'h3.ui-search-item__title',
+        'h2.poly-component__title',
+        'h3.poly-component__title',
+        '.poly-component__title',
+        'h3',
+        'h2'
+      ]);
+      const imgEl = queryFirst(item, [
+        'img[data-id]',
+        'img.ui-search-result-image__picture',
+        'img.poly-component__picture',
+        'img'
+      ]);
+      const priceEl = queryFirst(item, [
+        '.poly-price__amount',
+        '.andes-money-amount',
+        '.ui-search-price__part .andes-money-amount',
+        '.ui-search-price__second-line__price .andes-money-amount',
+        '[data-testid="price"] .andes-money-amount',
+        '.ui-search-item__group__price .andes-money-amount'
+      ]);
+      const reviewsEl = queryFirst(item, [
+        '.poly-component__review-compacted + .andes-visually-hidden',
+        '.ui-search-reviews',
+        '.poly-component__rating',
+        '.ui-search-item__reviews-rating',
+        '.andes-visually-hidden'
+      ]);
+      const shippingEl = queryFirst(item, [
+        '.poly-component__shipping-v2 .andes-visually-hidden',
+        '.ui-search-item__shipping',
+        '.poly-component__shipping',
+        '[data-testid="shipping"]'
+      ]);
+      const linkEl = queryFirst(item, [
+        'a.poly-component__title',
+        'a.ui-search-item__group__title',
+        'a.ui-search-link',
+        'a.ui-search-item__link',
+        'a'
+      ]);
 
-      const name = nameEl ? (nameEl.innerText || nameEl.textContent || '').trim() : 'N/A';
-      const image = imgEl ? (imgEl.getAttribute('data-src') || imgEl.src || '') : '';
+      const name = nameEl ? (nameEl.innerText || nameEl.textContent || '').trim() : '';
+      const image = imgEl ? (imgEl.getAttribute('data-src') || imgEl.getAttribute('src') || '') : '';
       const priceAttr = priceEl ? priceEl.getAttribute('aria-label') : '';
       const priceFractionEl = priceEl ? priceEl.querySelector('.andes-money-amount__fraction') : null;
       const priceFraction = priceFractionEl ? (priceFractionEl.innerText || '').trim() : '';
@@ -820,6 +934,22 @@
                          (item.innerText || '').match(/\+?([0-9.,]+)\s*vendidos/i);
       const salesCount = salesMatch ? parseInt(salesMatch[1].replace(/\./g, '').replace(',', ''), 10) : 0;
 
+      // v6.4.0: filter garbage rows — skip if name is empty, "MercadoLibre",
+      // "Mercado Libre", or price is 0 (indicates selector miss or anti-bot page)
+      const lowerName = name.toLowerCase();
+      const isGarbage = !name ||
+        lowerName === 'mercadolibre' ||
+        lowerName === 'mercado libre' ||
+        lowerName === 'mercado libre - donde comprar y vender de todo' ||
+        lowerName.indexOf('hubo un error') !== -1 ||
+        lowerName.indexOf('ingresa a tu cuenta') !== -1 ||
+        parsedPrice.num === 0;
+
+      if (isGarbage) {
+        garbageFiltered++;
+        return;
+      }
+
       if (score >= minScore && salesCount >= minSales && (!requireFreeShipping || isFreeShipping)) {
         const mlvId = extractMlvId(permalink);
         const id = mlvId || ('slug_' + Math.random().toString(36).substr(2, 9));
@@ -827,7 +957,6 @@
           id,
           Nombre: name,
           Precio_Numerico: parsedPrice.num,
-          Precio_Detallado: parsedPrice.text,
           Moneda: parsedPrice.currency,
           Score: score,
           Ventas: salesCount,
@@ -842,7 +971,7 @@
           Vendedor_Nombre: 'Pendiente',
           Vendedor_Estatus: 'Pendiente',
           Google_Breakout_Vendedor: '',
-          Visitas: 0,                    // v6.3.0: populated by ML visits API during deep extraction
+          Visitas: 0,
           DeepExtracted: false
         });
       }
@@ -852,10 +981,25 @@
       const merged = mergeIntoLocal(incoming);
       persistProducts();
       if (merged > 0) {
-        setDebugger(`[Página analizada]: ${countOnPage} items, ${merged} nuevos agregados.`);
+        setDebugger(`[Página analizada]: ${countOnPage} items, ${merged} nuevos, ${garbageFiltered} filtrados (basura).`);
       }
+    } else if (countOnPage > 0 && garbageFiltered > 0) {
+      setDebugger(`[Página analizada]: ${countOnPage} items, TODOS filtrados como basura (${garbageFiltered}). Revisa el log de errores.`);
     }
     return countOnPage;
+  }
+
+  /** Try multiple CSS selectors, return the first match. */
+  function queryFirst(root, selectors) {
+    for (const sel of selectors) {
+      try {
+        const el = root.querySelector(sel);
+        if (el) return el;
+      } catch (e) {
+        // Invalid selector — skip
+      }
+    }
+    return null;
   }
 
   function safeValue(id, fallback) {
@@ -1318,11 +1462,14 @@
         consecutive429 = 0;
 
         if (!response.ok) {
+          const errMsg = `HTTP ${response.status} ${response.statusText || ''} — crawl detenido para "${currentSearchProcess.phrase}" en ${currentUrl}`;
           setDebugger(`[HTTP ${response.status}]: deteniendo crawl para "${currentSearchProcess.phrase}".`);
+          logError('HTTP ' + response.status, errMsg);
           break;
         }
         if (response.redirected && currentOffset > 1 && response.url.indexOf('_Desde_') === -1) {
           setDebugger('[Redirección sin paginación]: fin de resultados.');
+          logError('REDIRECT', `Redirección sin paginación en ${currentUrl} → ${response.url.substring(0, 80)}. Fin de resultados.`);
           break;
         }
         const html = await response.text();
@@ -1348,23 +1495,42 @@
   /* ------------------------------------------------------------------ */
 
   function parseArticleDocument(doc, targetUrl) {
+    // v6.4.0: use queryFirst for resilient selectors on article pages too.
     // 1. Title
-    const titleEl = doc.querySelector('.ui-pdp-title');
-    const title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : (doc.title || 'N/A');
+    const titleEl = queryFirst(doc, [
+      '.ui-pdp-title',
+      'h1.ui-pdp-title',
+      'h1[data-testid="ui-pdp-title"]',
+      'h1'
+    ]);
+    const title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '';
 
     // 2. Main image
-    const imgEl = doc.querySelector('img.ui-pdp-gallery__figure__image') || doc.querySelector('.ui-pdp-gallery__figure img');
+    const imgEl = queryFirst(doc, [
+      'img.ui-pdp-gallery__figure__image',
+      '.ui-pdp-gallery__figure img',
+      'figure.ui-pdp-gallery img',
+      '[data-testid="ui-pdp-gallery"] img'
+    ]);
     let imageSrc = '';
     if (imgEl) {
-      imageSrc = imgEl.getAttribute('data-zoom') || imgEl.src || '';
+      imageSrc = imgEl.getAttribute('data-zoom') || imgEl.getAttribute('src') || '';
       if (!imageSrc && imgEl.getAttribute('srcset')) {
         imageSrc = imgEl.getAttribute('srcset').split(',')[0].trim().split(' ')[0];
       }
     }
 
     // 3. Price (numeric + detailed) + currency
-    const priceFractionEl = doc.querySelector('.ui-pdp-price__second-line .andes-money-amount__fraction');
-    const priceAriaEl = doc.querySelector('.ui-pdp-price__second-line .andes-money-amount');
+    const priceFractionEl = queryFirst(doc, [
+      '.ui-pdp-price__second-line .andes-money-amount__fraction',
+      '.ui-pdp-price .andes-money-amount__fraction',
+      '.andes-money-amount__fraction'
+    ]);
+    const priceAriaEl = queryFirst(doc, [
+      '.ui-pdp-price__second-line .andes-money-amount',
+      '.ui-pdp-price .andes-money-amount',
+      '.andes-money-amount'
+    ]);
     const currencyEl = priceAriaEl ? priceAriaEl.querySelector('.andes-money-amount__currency-symbol') : null;
     const priceFraction = priceFractionEl ? (priceFractionEl.innerText || '').trim() : '';
     const priceAria = priceAriaEl ? priceAriaEl.getAttribute('aria-label') : '';
@@ -1372,11 +1538,18 @@
     const parsedPrice = parsePrice(priceAria, priceFraction, currencySymbol);
 
     // 4. Score
-    const scoreEl = doc.querySelector('.ui-pdp-review__rating');
+    const scoreEl = queryFirst(doc, [
+      '.ui-pdp-review__rating',
+      '.ui-pdp-review .andes-rating__label',
+      '.andes-rating__label'
+    ]);
     const scoreVal = scoreEl ? parseFloat((scoreEl.innerText || scoreEl.textContent || '').trim().replace(',', '.')) : 0;
 
     // 5. Sales
-    const subtitleEl = doc.querySelector('.ui-pdp-subtitle');
+    const subtitleEl = queryFirst(doc, [
+      '.ui-pdp-subtitle',
+      '.ui-pdp-header__subtitle .ui-pdp-subtitle'
+    ]);
     let salesCount = 0;
     if (subtitleEl) {
       const txt = subtitleEl.innerText || subtitleEl.textContent || '';
@@ -1385,21 +1558,37 @@
     }
 
     // 6. Location
-    const locEl = doc.querySelector('#subtitle_ .andes-typography--color-secondary') || doc.querySelector('.xprod-lib-shipping-promises__item .andes-typography--color-secondary');
+    const locEl = queryFirst(doc, [
+      '#subtitle_ .andes-typography--color-secondary',
+      '.xprod-lib-shipping-promises__item .andes-typography--color-secondary',
+      '.xprod-lib-shipping-promises__part--subtitle'
+    ]);
     const locationText = locEl ? (locEl.innerText || locEl.textContent || '').trim() : 'No especificada';
 
     // 7. Seller
-    const sellerEl = doc.querySelector('.ui-seller-data-header__title span') ||
-                     doc.querySelector('.ui-seller-data-header__title') ||
-                     doc.querySelector('#seller_data h2');
+    const sellerEl = queryFirst(doc, [
+      '.ui-seller-data-header__title span',
+      '.ui-seller-data-header__title',
+      '#seller_data h2',
+      '.ui-pdp-seller__name',
+      '.ui-pdp-seller .ui-pdp-seller__link'
+    ]);
     const sellerName = sellerEl ? (sellerEl.innerText || sellerEl.textContent || '').trim() : 'No especificado';
 
     // 8. Seller status + breadcrumbs
-    const statusEl = doc.querySelector('.ui-seller-data-status__title');
-    const breadcrumbs = doc.querySelectorAll('.andes-breadcrumb a.andes-breadcrumb__link');
+    const statusEl = queryFirst(doc, [
+      '.ui-seller-data-status__title',
+      '.ui-pdp-seller-status__title'
+    ]);
+    const breadcrumbs = doc.querySelectorAll('.andes-breadcrumb a.andes-breadcrumb__link, nav.andes-breadcrumb a');
 
     // 9. Technical specifications — brand & model
-    const specsTables = doc.querySelectorAll('.ui-pdp-container__row--technical-specifications table, .ui-pdp-specifications table');
+    const specsTables = doc.querySelectorAll(
+      '.ui-pdp-container__row--technical-specifications table, ' +
+      '.ui-pdp-specifications table, ' +
+      '.ui-pdp-specs table, ' +
+      'table.ui-pdp-specifications__table'
+    );
     const specList = [];
     let brand = 'N/A';
     let model = 'N/A';
@@ -1499,15 +1688,21 @@
               setDebugger(`[Visitas ${mlvId}]: ${visitResponse.visits || 0} visitas en 10 días`);
             } else if (visitResponse && visitResponse.error) {
               setDebugger(`[Visitas ${mlvId} error]: ${visitResponse.error}`);
+              logError('VISIT_API', `Visitas ${mlvId}: ${visitResponse.error}${visitResponse.body ? ' — ' + visitResponse.body.substring(0, 100) : ''}`);
             }
           } catch (visitErr) {
             setDebugger(`[Visitas ${mlvId} exception]: ${visitErr.message}`);
+            logError('VISIT_EXC', `Visitas ${mlvId}: ${visitErr.message}`);
           }
         } else {
-          setDebugger('[Deep fetch error]: ' + (response && response.error ? response.error : 'sin respuesta'));
+          const errMsg = response && response.error ? response.error : 'sin respuesta del background SW';
+          setDebugger('[Deep fetch error]: ' + errMsg);
+          logError('DEEP_FETCH', `Artículo ${mlvId}: ${errMsg}`);
         }
       } catch (err) {
-        setDebugger('[Deep fetch exception]: ' + (err && err.message ? err.message : String(err)));
+        const errMsg = err && err.message ? err.message : String(err);
+        setDebugger('[Deep fetch exception]: ' + errMsg);
+        logError('DEEP_FETCH_EXC', `Artículo ${mlvId}: ${errMsg}`);
       }
 
       deepQueue.shift();
@@ -1586,18 +1781,39 @@
   function downloadCSV() {
     if (products.length === 0) return;
 
+    // v6.4.0: removed Moneda + Precio_Detallado columns per user request.
+    // Also filter garbage rows: skip products with name="MercadoLibre" or price=0.
+    const validProducts = products.filter((p) => {
+      const name = (p.Nombre || '').toLowerCase();
+      return name &&
+        name !== 'mercadolibre' &&
+        name !== 'mercado libre' &&
+        name.indexOf('hubo un error') === -1 &&
+        name.indexOf('ingresa a tu cuenta') === -1 &&
+        (p.Precio_Numerico || 0) > 0;
+    });
+
+    if (validProducts.length === 0) {
+      logError('CSV_EXPORT', 'No hay productos válidos para exportar (todos fueron filtrados como basura).');
+      alert('No hay productos válidos para exportar.\nTodos fueron filtrados (nombre vacío o precio 0).\nRevisa el log de errores para más detalles.');
+      return;
+    }
+
+    const skipped = products.length - validProducts.length;
+    if (skipped > 0) {
+      logError('CSV_EXPORT', `Exportados ${validProducts.length} productos, ${skipped} filtrados (basura: nombre vacío/MercadoLibre o precio 0).`);
+    }
+
     const headers = [
-      'Nombre', 'Precio_Numerico', 'Moneda', 'Precio_Detallado', 'Score', 'Ventas_Estimadas',
-      'Visitas_10dias',   // v6.3.0: real visit count from ML API (0 = not yet fetched)
+      'Nombre', 'Precio_Numerico', 'Score', 'Ventas_Estimadas',
+      'Visitas_10dias',
       'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Ubicacion_Tienda',
       'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
     ];
 
-    const rows = products.map((p) => [
+    const rows = validProducts.map((p) => [
       csvCell(p.Nombre),
       csvCell(p.Precio_Numerico || 0),
-      csvCell(p.Moneda || 'N/A'),
-      csvCell(p.Precio_Detallado || ''),
       csvCell(p.Score || 0),
       csvCell(p.Ventas || 0),
       csvCell(p.Visitas || 0),
