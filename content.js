@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.8.0';
+  const EXT_VERSION = '6.8.1';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -1852,7 +1852,17 @@
         // with full DOM, then scrape the rendered page.
         // Build the URL with the ?ml_extract=1 flag so the content script
         // on that tab knows to extract and send back data.
-        const articleUrl = `https://articulo.mercadolibre.com.ve/${mlvId}-_JM?ml_extract=1`;
+        // v6.8.1: ML article URLs use MLV-XXXX (WITH hyphen) format.
+        // mlvId is stripped (MLVXXXX), so reconstruct with hyphen.
+        // Prefer the original permalink if available (has full slug).
+        let articleUrl;
+        if (rawLink && /^https?:\/\//i.test(rawLink)) {
+          articleUrl = cleanPermalink(rawLink) + '?ml_extract=1';
+        } else {
+          // Reconstruct: MLV712527634 → MLV-712527634
+          const digits = mlvId.replace(/^MLV/i, '');
+          articleUrl = `https://articulo.mercadolibre.com.ve/MLV-${digits}-_JM?ml_extract=1`;
+        }
         const tabResponse = await sendMessage({ action: 'FETCH_ARTICLE_IN_TAB', url: articleUrl });
 
         if (!tabResponse || !tabResponse.success) {
