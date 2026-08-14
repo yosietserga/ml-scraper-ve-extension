@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.7.0';
+  const EXT_VERSION = '6.8.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -1845,61 +1845,29 @@
 
       const statusEl = document.getElementById('ml-status');
       if (statusEl) statusEl.innerText = `API Fetch: ${mlvId}... (${deepQueue.length} restantes, ${successCount} ok, ${failCount} fail)`;
-      logActivity('DEEP_FETCH', `[${processed}] Fetching ${mlvId} via ML API`, 'info');
+      logActivity('DEEP_FETCH', `[${processed}] Fetching ${mlvId} via tab (real browser render)`, 'info');
 
       try {
-        // v6.7.0: use ML API instead of HTML scraping.
-        // Article pages are SPAs — fetch() returns a 24KB shell without data.
-        // The ML API /items/{id} returns structured JSON with everything.
-        const itemResponse = await sendMessage({ action: 'FETCH_ITEM', itemId: mlvId });
+        // v6.8.0: open article in a real browser tab so the SPA renders
+        // with full DOM, then scrape the rendered page.
+        // Build the URL with the ?ml_extract=1 flag so the content script
+        // on that tab knows to extract and send back data.
+        const articleUrl = `https://articulo.mercadolibre.com.ve/${mlvId}-_JM?ml_extract=1`;
+        const tabResponse = await sendMessage({ action: 'FETCH_ARTICLE_IN_TAB', url: articleUrl });
 
-        if (!itemResponse || !itemResponse.success) {
-          const errMsg = itemResponse && itemResponse.error ? itemResponse.error : 'sin respuesta del background SW';
-          logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: API FAILED — ${errMsg}`, 'error');
+        if (!tabResponse || !tabResponse.success) {
+          const errMsg = tabResponse && tabResponse.error ? tabResponse.error : 'sin respuesta del tab';
+          logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: TAB EXTRACTION FAILED — ${errMsg}`, 'error');
           failCount++;
         } else {
-          const item = itemResponse.item;
-          logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: API OK, title="${(item.title || '').substring(0, 40)}", price=${item.price}, seller_id=${item.seller_id}`, 'info');
+          const extracted = tabResponse.extracted;
+          logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: TAB OK, title="${(extracted.Nombre || '').substring(0, 40)}", price=${extracted.Precio_Numerico}`, 'info');
 
-          // Build product from API JSON
-          const extracted = buildProductFromAPI(item, mlvId);
-
-          // Fetch reviews (score + review count) — separate API call
-          const reviewsResponse = await sendMessage({ action: 'FETCH_ITEM_REVIEWS', itemId: mlvId });
-          if (reviewsResponse && reviewsResponse.success && reviewsResponse.reviews) {
-            const rev = reviewsResponse.reviews;
-            extracted.Score = rev.rating_average || 0;
-            extracted.Opiniones = rev.total || 0;
-            logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: reviews — score=${extracted.Score}, count=${extracted.Opiniones}`, 'info');
-          } else {
-            logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: reviews fetch failed — ${reviewsResponse ? reviewsResponse.error : 'no response'}`, 'warn');
+          if (!extracted.Nombre || extracted.Nombre === 'N/A' || extracted.Precio_Numerico === 0) {
+            logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: extraction yielded empty/garbage data. Selectors may be outdated.`, 'warn');
           }
 
-          // Fetch seller info (name, reputation, sales) — separate API call
-          if (item.seller_id) {
-            const sellerResponse = await sendMessage({ action: 'FETCH_SELLER', sellerId: item.seller_id });
-            if (sellerResponse && sellerResponse.success && sellerResponse.seller) {
-              const s = sellerResponse.seller;
-              extracted.Vendedor_Nombre = s.nickname || s.first_name || 'N/A';
-              // Seller status/reputation
-              if (s.seller_reputation) {
-                const rep = s.seller_reputation;
-                extracted.Vendedor_Estatus = rep.level_id || (rep.power_seller_status ? rep.power_seller_status : 'N/A');
-                if (rep.transactions && rep.transactions.total !== undefined) {
-                  extracted.Vendedor_Ventas = String(rep.transactions.total);
-                }
-                if (rep.metrics && rep.metrics.sales && rep.metrics.sales.completed) {
-                  extracted.Vendedor_Ventas = String(rep.metrics.sales.completed);
-                }
-              }
-              extracted.Vendedor_AniosML = s.registration_date ? new Date(s.registration_date).getFullYear() + '' : 'N/A';
-              logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: seller — name="${extracted.Vendedor_Nombre}", status="${extracted.Vendedor_Estatus}", sales=${extracted.Vendedor_Ventas}`, 'info');
-            } else {
-              logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: seller fetch failed — ${sellerResponse ? sellerResponse.error : 'no response'}`, 'warn');
-            }
-          }
-
-          // Fetch visits (if not disabled)
+          // Fetch visits (if not disabled) — visits API is separate
           if (!visitsDisabled) {
             try {
               const visitResponse = await sendMessage({ action: 'FETCH_VISITS', itemId: mlvId });
@@ -1925,7 +1893,7 @@
             }
           }
 
-          logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: FINAL — title="${(extracted.Nombre || '').substring(0, 40)}", price=${extracted.Precio_Numerico}, score=${extracted.Score}, reviews=${extracted.Opiniones}, seller="${(extracted.Vendedor_Nombre || '').substring(0, 25)}"`, 'info');
+          logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: FINAL — title="${(extracted.Nombre || '').substring(0, 40)}", price=${extracted.Precio_Numerico}, score=${extracted.Score}, reviews=${extracted.Opiniones || 0}, seller="${(extracted.Vendedor_Nombre || '').substring(0, 25)}"`, 'info');
 
           // Merge into products
           const existingIdx = products.findIndex((p) => extractMlvId(p.Link) === mlvId || p.id === mlvId);
@@ -2186,6 +2154,15 @@
   async function boot() {
     await loadAll();
     await loadErrorLog();   // v6.5.0: load persisted error log
+
+    // v6.8.0: if this is an article page opened in a background tab for
+    // extraction (detected via URL param ?ml_extract=1), wait for the DOM
+    // to fully render (SPA hydration), then extract and send back.
+    if (isArticlePage && location.search.indexOf('ml_extract=1') !== -1) {
+      runTabExtraction();
+      return;  // don't show the panel UI on extraction tabs
+    }
+
     buildModal();
     renderResults();
     renderQueueUI();
@@ -2199,6 +2176,57 @@
     if (badge) badge.textContent = errorLog.length;
 
     setDebugger(`[V${EXT_VERSION}] Conectado. ${products.length} productos en almacenamiento compartido.`);
+  }
+
+  /** v6.8.0: Wait for ML article SPA to fully render, then extract data.
+   *  Uses MutationObserver + poll for key elements (title, price) to appear.
+   */
+  async function runTabExtraction() {
+    console.log('[ML Scraper] Tab extraction mode — waiting for SPA render...');
+
+    // Wait for the title element to appear (indicates SPA hydrated)
+    const maxWait = 20000;  // 20s max
+    const startTime = Date.now();
+    let titleEl = null;
+
+    while (Date.now() - startTime < maxWait) {
+      titleEl = document.querySelector('.ui-pdp-title');
+      if (titleEl && titleEl.textContent.trim().length > 3) break;
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    // Extra delay to let price/seller data load
+    await new Promise(r => setTimeout(r, 1000));
+
+    console.log('[ML Scraper] SPA rendered, extracting...');
+
+    try {
+      const extracted = parseArticleDocument(document, location.href);
+      console.log('[ML Scraper] Extraction result:', {
+        title: extracted.Nombre,
+        price: extracted.Precio_Numerico,
+        score: extracted.Score,
+        reviews: extracted.Opiniones,
+        seller: extracted.Vendedor_Nombre
+      });
+
+      // Send the extracted data back to the background
+      chrome.runtime.sendMessage({
+        action: 'ARTICLE_EXTRACTED',
+        data: { success: true, extracted }
+      }, (response) => {
+        // After sending, the background will close this tab
+        if (chrome.runtime.lastError) {
+          console.error('[ML Scraper] Error sending extraction:', chrome.runtime.lastError.message);
+        }
+      });
+    } catch (err) {
+      console.error('[ML Scraper] Extraction failed:', err);
+      chrome.runtime.sendMessage({
+        action: 'ARTICLE_EXTRACTED',
+        data: { success: false, error: err.message }
+      });
+    }
   }
 
   // Wait for body to exist (content script runs at document_idle, but be safe).

@@ -302,10 +302,63 @@ async function fetchSeller(sellerId, accessToken) {
 /* Message router                                                     */
 /* ------------------------------------------------------------------ */
 
+// v6.8.0: pending article extraction requests — keyed by tab id.
+// When a tab finishes loading an article, the content script sends
+// ARTICLE_EXTRACTED with the data, and we resolve the waiting promise.
+const pendingArticleExtractions = new Map(); // tabId -> { resolve, reject, timer }
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (!request || typeof request !== 'object') return;
 
   switch (request.action) {
+    // v6.8.0: open article in a real browser tab (with cookies/session),
+    // wait for the content script to scrape the rendered DOM, return data.
+    // This replaces the broken fetch()-based approach (ML serves SPAs).
+    case 'FETCH_ARTICLE_IN_TAB': {
+      const url = request.url;
+      if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+        sendResponse({ success: false, error: 'Invalid url' });
+        return true;
+      }
+      (async () => {
+        try {
+          // Open a new tab in the background (active=false)
+          const tab = await chrome.tabs.create({ url, active: false });
+          if (!tab || !tab.id) {
+            sendResponse({ success: false, error: 'Failed to create tab' });
+            return;
+          }
+          // Wait for the content script on that tab to send ARTICLE_EXTRACTED
+          const result = await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              pendingArticleExtractions.delete(tab.id);
+              reject(new Error('Tab extraction timeout (30s)'));
+            }, 30000);
+            pendingArticleExtractions.set(tab.id, { resolve, reject, timer: timeout });
+          });
+          // Close the tab after extraction
+          chrome.tabs.remove(tab.id).catch(() => {});
+          sendResponse(result);
+        } catch (err) {
+          sendResponse({ success: false, error: err && err.message ? err.message : String(err) });
+        }
+      })();
+      return true;
+    }
+
+    // v6.8.0: content script sends this after scraping an article page
+    case 'ARTICLE_EXTRACTED': {
+      const tabId = sender.tab && sender.tab.id;
+      const pending = pendingArticleExtractions.get(tabId);
+      if (pending) {
+        clearTimeout(pending.timer);
+        pendingArticleExtractions.delete(tabId);
+        pending.resolve(request.data || { success: false, error: 'No data from content script' });
+      }
+      sendResponse({ success: true });
+      return true;
+    }
+
     case 'FETCH_ARTICLE': {
       const url = request.url;
       if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
