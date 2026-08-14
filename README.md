@@ -1,8 +1,10 @@
-# MercadoLibre VE Scraper — Chrome Extension (v6.1.0)
+# MercadoLibre VE Scraper — Chrome Extension (v6.2.0)
 
 Advanced scraper for **MercadoLibre Venezuela** (`mercadolibre.com.ve`) packaged as a Manifest V3 Chrome extension. Crawl thousands of products, extract seller data, and generate **strategic business intelligence** — Porter's Five Forces, FODA/SWOT, and an A1 opportunity list of top products to import/resell.
 
-> **New in v6.1.0:** Strategic Analysis dashboard, scale fixes (debounced render, virtualized results, background cache, `unlimitedStorage`, HTTP 429 backoff, max-pages/products limits). See [Changelog](#changelog).
+> **New in v6.2.0:** Paste any MercadoLibre URL (category, subcategory, or custom listing) to crawl it directly — no need to guess search phrases. See [Changelog](#changelog).
+>
+> **v6.1.0:** Strategic Analysis dashboard, scale fixes (debounced render, virtualized results, background cache, `unlimitedStorage`, HTTP 429 backoff, max-pages/products limits).
 >
 > v6.0.0 was the cleaned-up successor to the v4.0.5 userscript and the (buggy, incomplete) v5.0.0 proposed by Gemini. **21 issues were found and fixed** in v5.0.0.
 
@@ -167,6 +169,30 @@ The content script can't `fetch()` article pages directly because ML's CORS poli
 ---
 
 ## 🐛 Changelog
+
+### v6.2.0 — Paste any MercadoLibre URL to crawl
+
+**New features:**
+- ✅ **URL-aware search input** — the search textarea now accepts raw MercadoLibre URLs in addition to search phrases. Paste any of these and the crawler will start from that exact URL:
+  - Category pages: `https://listado.mercadolibre.com.ve/electrodomesticos/cocina/licuadoras/`
+  - Subdomain listings: `https://hogar.mercadolibre.com.ve/cafeteras/`
+  - Vehicle listings: `https://listado.mercadolibre.com.ve/vehiculos/auto/`
+  - Any custom filtered listing URL
+- ✅ **"🔗 Usar URL de esta pestaña" button** — one click injects the current tab's URL into the search input. Ideal when you're already browsing a category/listing page and want to crawl it without copy/pasting.
+- ✅ **Smart pagination** — `buildOffsetUrl` now handles full URLs: page 1 uses the URL as-is (trailing slash + query/fragment stripped), page N+ appends `_Desde_N_NoIndex_True` to the path (ML's standard pagination convention).
+- ✅ **Visual distinction in queue** — URL entries show a 🔗 icon and are truncated for readability (full URL on hover via tooltip); phrases show as-is.
+- ✅ **Deduplication** — URLs are normalized (trailing slash stripped, lowercased) before dedup so `…/licuadoras/` and `…/licuadoras` don't create duplicate queue entries.
+- ✅ **Mix phrases + URLs** — you can combine both in one input: `licuadora, https://hogar.mercadolibre.com.ve/cafeteras/, tostadora`.
+
+**Supported URL patterns:**
+- `https://listado.mercadolibre.com.ve/<category>/<subcategory>/...` (deep category trees)
+- `https://hogar.mercadolibre.com.ve/<category>/` (home & garden subdomain)
+- `https://vehiculos.mercadolibre.com.ve/<type>/` (vehicles subdomain)
+- `https://listado.mercadolibre.com.ve/<search-term>` (search results — same as phrase mode)
+- Any `*.mercadolibre.com.ve/*` URL with a listing of products
+
+**Not supported** (the crawler expects product listing pages, not individual articles):
+- `https://articulo.mercadolibre.com.ve/MLV...` (single product — use the deep extraction feature instead)
 
 ### v6.1.0 — Strategic Analysis + Scale Fixes
 

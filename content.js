@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.0.0';
+  const EXT_VERSION = '6.2.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_PANEL = 'ml_panel_visible';
@@ -370,8 +370,8 @@
         ${!isArticlePage ? `
         <div id="tab-search" class="ml-tab-body active">
           <div class="ml-input-group">
-            <label>Término(s) de Búsqueda (Enter para agregar, coma o salto de línea para múltiples):</label>
-            <textarea id="ml-search-input" rows="2" placeholder="Ej: licuadora, cafetera, tostadora"></textarea>
+            <label>Término(s) de Búsqueda o URL de MercadoLibre (Enter para agregar, coma o salto de línea para múltiples):</label>
+            <textarea id="ml-search-input" rows="3" placeholder="Frases: licuadora, cafetera, tostadora&#10;O pega una URL: https://listado.mercadolibre.com.ve/electrodomesticos/cocina/licuadoras/"></textarea>
           </div>
           <div class="ml-btn-group">
             <button class="ml-btn ml-btn-primary" id="btn-start">Iniciar Crawling</button>
@@ -386,8 +386,11 @@
           <div class="ml-btn-group" style="margin-top: 8px;">
             <button class="ml-btn ml-btn-success" id="btn-download" ${products.length === 0 ? 'disabled' : ''}>Descargar CSV/Excel</button>
           </div>
+          <div class="ml-btn-group" style="margin-top: 4px;">
+            <button class="ml-btn ml-btn-secondary" id="btn-use-current-url" title="Usa la URL completa de esta pestaña como punto de inicio (ideal para categorías y listados personalizados)" style="flex:1; font-size:10px;">🔗 Usar URL de esta pestaña</button>
+          </div>
           <div class="ml-queue-box">
-            <div class="ml-queue-title">Cola de Trabajo (Frases)</div>
+            <div class="ml-queue-title">Cola de Trabajo (Frases / URLs)</div>
             <div id="queue-container"><span style="color:#888; font-size:10px;">Sin frases pendientes...</span></div>
           </div>
         </div>
@@ -531,6 +534,28 @@
     const btnStart = document.getElementById('btn-start');
     if (btnStart) btnStart.onclick = () => { addPhrasesToQueue(); };
 
+    // v6.2.0: "Use current tab URL" button — injects the current page's URL
+    // into the search input so the user can crawl a category/listing page
+    // they're already browsing without copy/pasting.
+    const btnUseCurrentUrl = document.getElementById('btn-use-current-url');
+    if (btnUseCurrentUrl) {
+      btnUseCurrentUrl.onclick = () => {
+        const searchInput = document.getElementById('ml-search-input');
+        if (!searchInput) return;
+        const currentUrl = window.location.href;
+        // Append to existing input (preserve any phrases already typed)
+        const existing = (searchInput.value || '').trim();
+        searchInput.value = existing
+          ? existing + ',\n' + currentUrl
+          : currentUrl;
+        searchInput.focus();
+        // Visual feedback: briefly highlight the input
+        searchInput.style.transition = 'background 0.3s';
+        searchInput.style.background = '#e3f2fd';
+        setTimeout(() => { searchInput.style.background = ''; }, 600);
+      };
+    }
+
     const btnPause = document.getElementById('btn-toggle-pause');
     if (btnPause) {
       btnPause.onclick = function () {
@@ -635,12 +660,58 @@
     return m ? m[0].replace('_', '-').toUpperCase() : null;
   }
 
-  function buildOffsetUrl(slug, offset) {
+  function buildOffsetUrl(base, offset) {
+    // `base` can be either:
+    //   (a) a slug like '/licuadora' or '/electrodomesticos/cocina/licuadoras'
+    //       → resolved against the current tab origin (legacy phrase mode)
+    //   (b) a full URL like 'https://listado.mercadolibre.com.ve/electrodomesticos/cocina/licuadoras'
+    //       → used as-is for page 1, with '_Desde_N_NoIndex_True' appended to the
+    //         path for subsequent pages (ML's pagination convention)
+    if (/^https?:\/\//i.test(base)) {
+      // Full URL mode (v6.2.0): supports any ML VE subdomain
+      // (listado, hogar, vehiculos, etc.) and any path depth.
+      try {
+        const u = new URL(base);
+        // Strip trailing slash from pathname so the pagination suffix attaches cleanly
+        const cleanPath = u.pathname.replace(/\/+$/, '') || '/';
+        if (offset === 1) {
+          // Page 1: original URL as-is (preserve nothing else — fragments/queries
+          // are dropped because ML's pagination uses path-based _Desde_ markers)
+          return u.origin + cleanPath;
+        }
+        // Page N+: append _Desde_N_NoIndex_True to the last path segment.
+        // ML's convention: /licuadora → /licuadora_Desde_49_NoIndex_True
+        return u.origin + cleanPath + '_Desde_' + offset + '_NoIndex_True';
+      } catch (e) {
+        // Malformed URL — fall back to raw string
+        setDebugger('[URL malformada]: ' + base + ' — ' + e.message);
+        return base;
+      }
+    }
+    // Slug mode (legacy): resolve against current tab origin
     const origin = window.location.origin;
-    const cleanSlug = slug.replace(/^\/+|\/+$/g, '');
+    const cleanSlug = base.replace(/^\/+|\/+$/g, '');
     return offset === 1
       ? `${origin}/${cleanSlug}`
       : `${origin}/${cleanSlug}_Desde_${offset}_NoIndex_True`;
+  }
+
+  /** Truncate a URL for compact display in the queue UI. */
+  function truncateUrl(url, maxLen) {
+    if (!url) return '';
+    if (maxLen === undefined) maxLen = 48;
+    if (url.length <= maxLen) return url;
+    // Show scheme + host + first/last path segments
+    try {
+      const u = new URL(url);
+      const path = u.pathname;
+      if (path.length <= maxLen - u.host.length - 10) {
+        return u.host + path;
+      }
+      return url.substring(0, maxLen - 1) + '…';
+    } catch (e) {
+      return url.substring(0, maxLen - 1) + '…';
+    }
   }
 
   function setDebugger(text) {
@@ -982,10 +1053,18 @@
       : [window.location.pathname];
 
     phrases.forEach((phrase) => {
-      if (!queueWork.some((q) => q.phrase.toLowerCase() === phrase.toLowerCase())) {
+      // v6.2.0: detect whether this entry is a URL or a plain phrase.
+      const isUrl = /^https?:\/\//i.test(phrase);
+      // Dedup key: normalized lowercase (URLs) or as-is (phrases)
+      const dedupKey = isUrl ? phrase.toLowerCase().replace(/\/+$/, '') : phrase.toLowerCase();
+      if (!queueWork.some((q) => {
+        const qKey = /^https?:\/\//i.test(q.phrase) ? q.phrase.toLowerCase().replace(/\/+$/, '') : q.phrase.toLowerCase();
+        return qKey === dedupKey;
+      })) {
         queueWork.push({
           id: 'q_' + Math.random().toString(36).substr(2, 7),
           phrase,
+          isUrl,
           status: 'waiting'
         });
       }
@@ -1009,12 +1088,19 @@
       el.className = 'ml-queue-item ' + item.status;
       const statusText = item.status === 'processing' ? 'En proceso...'
         : item.status === 'done' ? 'Completado' : 'En espera';
-      const phr = escapeHtml(item.phrase);
+      // v6.2.0: URLs get a 🔗 icon and are truncated; phrases show as-is
+      const displayText = item.isUrl
+        ? '🔗 ' + escapeHtml(truncateUrl(item.phrase, 50))
+        : escapeHtml(item.phrase);
       const st = escapeHtml(statusText);
       el.innerHTML = `
-        <span><b>${phr}</b> <i style="font-size:9px; color:#666;">(${st})</i></span>
+        <span><b>${displayText}</b> <i style="font-size:9px; color:#666;">(${st})</i></span>
         ${item.status !== 'done' ? '<span style="cursor:pointer; color:#ff5252; font-weight:bold;" class="cancel-q">✕</span>' : ''}
       `;
+      // Add full-URL tooltip for truncated URLs
+      if (item.isUrl) {
+        el.title = item.phrase;
+      }
       if (item.status !== 'done') {
         const cancelEl = el.querySelector('.cancel-q');
         if (cancelEl) cancelEl.onclick = () => {
@@ -1051,9 +1137,25 @@
     nextItem.status = 'processing';
     renderQueueUI();
 
-    currentBaseSlug = nextItem.phrase.indexOf('/') === 0
-      ? nextItem.phrase
-      : '/' + encodeURIComponent(nextItem.phrase.toLowerCase());
+    // v6.2.0: support pasted raw URLs in addition to phrases.
+    //   - Full URL (https://...): use as-is (buildOffsetUrl handles origin + path)
+    //   - Path starting with '/': use as slug against current tab origin (legacy)
+    //   - Plain text phrase: URL-encode and treat as slug (legacy)
+    const phrase = nextItem.phrase;
+    if (/^https?:\/\//i.test(phrase)) {
+      // Normalize: strip query/hash, strip trailing slash — pagination is path-based
+      try {
+        const u = new URL(phrase);
+        currentBaseSlug = u.origin + (u.pathname.replace(/\/+$/, '') || '/');
+      } catch (e) {
+        // Malformed — treat as raw string (will likely 404, but let it try)
+        currentBaseSlug = phrase;
+      }
+    } else if (phrase.indexOf('/') === 0) {
+      currentBaseSlug = phrase;
+    } else {
+      currentBaseSlug = '/' + encodeURIComponent(phrase.toLowerCase());
+    }
     currentOffset = 1;
     visitedUrls.clear();
 
