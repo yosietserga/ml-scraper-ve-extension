@@ -60,7 +60,8 @@ function extractMlvId(value) {
   if (!value) return null;
   const s = String(value);
   const m = s.match(/MLV[-_]?\d+/i);
-  return m ? m[0].replace('_', '-').toUpperCase() : null;
+  // v6.5.0: strip hyphens/underscores → MLV702250939 (no separators)
+  return m ? m[0].replace(/[-_]/g, '').toUpperCase() : null;
 }
 
 /* ------------------------------------------------------------------ */

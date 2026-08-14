@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.4.0';
+  const EXT_VERSION = '6.5.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -373,12 +373,14 @@
   function buildModalHtml() {
     return `
       <div class="ml-header">
-        <div class="ml-header-title">
+        <div class="ml-header-title" id="ml-header-title" style="cursor:pointer; flex:1;" title="Doble clic para colapsar/expandir">
           ${logoIconUrl() ? `<img src="${escapeAttr(logoIconUrl())}" class="ml-header-logo" alt="ML">` : ''}
           <span>ML Scraper VE v${EXT_VERSION}</span>
         </div>
+        <span class="ml-close-btn" id="ml-collapse" title="Colapsar / Expandir panel" style="margin-right:8px; cursor:pointer; font-size:14px;">▼</span>
         <span class="ml-close-btn" id="ml-close" title="Ocultar panel (usa el ícono de la extensión para mostrarlo de nuevo)">${ICONS.close}</span>
       </div>
+      <div class="ml-body-wrapper" id="ml-body-wrapper">
       <div class="ml-tabs">
         ${!isArticlePage ? '<div class="ml-tab active" data-target="tab-search">Buscador</div>' : ''}
         <div class="ml-tab ${isArticlePage ? 'active' : ''}" data-target="tab-results">Resultados (<span id="tab-count">${products.length}</span>)</div>
@@ -441,17 +443,17 @@
           <div style="font-size: 11px; font-weight: bold; margin-bottom: 6px; color: #2d3277;">Filtros Generales</div>
           <div class="ml-input-group">
             <label>Ventas Mínimas Requeridas (ej: 500):</label>
-            <input type="number" id="cfg-sales" value="0">
+            <input type="number" id="cfg-sales" value="500">
           </div>
           <div class="ml-input-group">
             <label>Score Mínimo (ej: 4.8):</label>
-            <input type="number" id="cfg-score" step="0.1" value="0">
+            <input type="number" id="cfg-score" step="0.1" value="4.8">
           </div>
           <div class="ml-input-group">
             <label>Solo Envío Gratis:</label>
             <select id="cfg-shipping">
-              <option value="false" selected>No (Todos)</option>
-              <option value="true">Sí</option>
+              <option value="false">No (Todos)</option>
+              <option value="true" selected>Sí</option>
             </select>
           </div>
           <div class="ml-input-group">
@@ -460,7 +462,7 @@
           </div>
           <div class="ml-input-group">
             <label>Máx. Páginas por Búsqueda (0 = ilimitado):</label>
-            <input type="number" id="cfg-max-pages" value="20">
+            <input type="number" id="cfg-max-pages" value="0">
           </div>
           <div class="ml-input-group">
             <label>Máx. Productos Total (0 = ilimitado):</label>
@@ -468,11 +470,15 @@
           </div>
           <div class="ml-input-group">
             <label>ML API Access Token (opcional, para visitas):</label>
-            <input type="password" id="cfg-access-token" placeholder="APP_USR-...-...-..." style="font-size:10px;">
+            <div style="display:flex; gap:4px;">
+              <input type="password" id="cfg-access-token" placeholder="APP_USR-...-...-..." style="flex:1; font-size:10px;">
+              <button class="ml-btn ml-btn-secondary" id="btn-toggle-token" title="Mostrar / Ocultar token" style="padding:4px 8px; font-size:11px;">👁</button>
+            </div>
             <div style="font-size:9px; color:#888; margin-top:3px;">Pega tu token de ML para obtener visitas reales. Sin token, la API pública funciona pero con límites más bajos.</div>
           </div>
           <div class="ml-btn-group" style="margin-top: 8px;">
             <button class="ml-btn ml-btn-purple" id="btn-open-analysis" style="flex:1;">📊 Abrir Análisis Estratégico</button>
+            <button class="ml-btn ml-btn-secondary" id="btn-open-error-log" style="flex:1;" title="Abrir log de errores en pestaña nueva">📋 Log de Errores</button>
           </div>
           <hr style="border:0; border-top:1px solid #eee; margin:10px 0;">
           <div style="font-size: 11px; font-weight: bold; margin-bottom: 6px; color: #2d3277;">Información Extraída del Vendedor</div>
@@ -481,15 +487,6 @@
           </div>
         </div>
       </div>
-      <!-- v6.4.0: Error log panel (collapsible) -->
-      <div id="ml-error-log-panel" style="border-top:1px solid #ddd; background:#1a1a2e; color:#eee;">
-        <div id="ml-error-log-header" style="padding:6px 14px; cursor:pointer; font-size:11px; font-weight:bold; display:flex; justify-content:space-between; align-items:center;">
-          <span>📋 Log de Errores / Debug</span>
-          <span><span id="ml-error-count" style="background:#ff5252; color:#fff; padding:1px 6px; border-radius:8px; font-size:9px; margin-right:6px;">0</span><span id="ml-error-toggle" style="font-size:10px;">▼</span></span>
-        </div>
-        <div id="ml-error-log-body" style="padding:8px 14px; max-height:120px; overflow-y:auto; font-family:monospace; font-size:9px; line-height:1.5; display:none;">
-          <span style="color:#666; font-size:10px;">Sin errores registrados.</span>
-        </div>
       </div>
     `;
   }
@@ -546,18 +543,18 @@
       };
     }
 
-    // v6.4.0: error log toggle
-    const errorLogHeader = document.getElementById('ml-error-log-header');
-    if (errorLogHeader) {
-      errorLogHeader.onclick = () => {
-        const body = document.getElementById('ml-error-log-body');
-        const toggle = document.getElementById('ml-error-toggle');
-        if (!body) return;
-        const isOpen = body.style.display !== 'none';
-        body.style.display = isOpen ? 'none' : 'block';
-        if (toggle) toggle.textContent = isOpen ? '▼' : '▲';
-      };
-    }
+    // v6.5.0: modal collapse/expand toggle
+    const btnCollapse = document.getElementById('ml-collapse');
+    const bodyWrapper = document.getElementById('ml-body-wrapper');
+    const headerTitle = document.getElementById('ml-header-title');
+    const toggleCollapse = () => {
+      if (!bodyWrapper) return;
+      const isCollapsed = bodyWrapper.style.display === 'none';
+      bodyWrapper.style.display = isCollapsed ? '' : 'none';
+      if (btnCollapse) btnCollapse.textContent = isCollapsed ? '▼' : '▲';
+    };
+    if (btnCollapse) btnCollapse.onclick = toggleCollapse;
+    if (headerTitle) headerTitle.ondblclick = toggleCollapse;
 
     // Filter / sort
     const filterInput = document.getElementById('filter-name');
@@ -688,6 +685,34 @@
       });
       tokenInput.addEventListener('blur', saveToken);
     }
+
+    // v6.5.0: toggle show/hide for access token
+    const btnToggleToken = document.getElementById('btn-toggle-token');
+    if (btnToggleToken) {
+      btnToggleToken.onclick = () => {
+        const inp = document.getElementById('cfg-access-token');
+        if (!inp) return;
+        if (inp.type === 'password') {
+          inp.type = 'text';
+          btnToggleToken.textContent = '🙈';
+        } else {
+          inp.type = 'password';
+          btnToggleToken.textContent = '👁';
+        }
+      };
+    }
+
+    // v6.5.0: open error log in new tab
+    const btnOpenErrorLog = document.getElementById('btn-open-error-log');
+    if (btnOpenErrorLog) {
+      btnOpenErrorLog.onclick = () => {
+        try {
+          window.open(chrome.runtime.getURL('error-log.html'), '_blank');
+        } catch (e) {
+          alert('No se pudo abrir el log de errores: ' + e.message);
+        }
+      };
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -735,7 +760,9 @@
     if (!value) return null;
     const s = String(value);
     const m = s.match(/MLV[-_]?\d+/i);
-    return m ? m[0].replace('_', '-').toUpperCase() : null;
+    // v6.5.0: ML item IDs are always MLV + digits with NO hyphens/underscores.
+    // The visits API expects "MLV702250939" not "MLV-702250939".
+    return m ? m[0].replace(/[-_]/g, '').toUpperCase() : null;
   }
 
   function buildOffsetUrl(base, offset) {
@@ -806,33 +833,36 @@
   /* ------------------------------------------------------------------ */
 
   const errorLog = [];          // {ts, type, message}
-  const MAX_LOG_ENTRIES = 200;
+  const MAX_LOG_ENTRIES = 500;
+  const STORAGE_KEY_ERROR_LOG = 'ml_error_log';
 
   function logError(type, message) {
-    const entry = { ts: new Date().toISOString().substring(11, 19), type, message: String(message).substring(0, 300) };
+    const entry = { ts: new Date().toISOString(), type, message: String(message).substring(0, 500) };
     errorLog.push(entry);
     if (errorLog.length > MAX_LOG_ENTRIES) errorLog.shift();
     console.warn('[ML Scraper][' + type + ']', message);
-    renderErrorLog();
-  }
-
-  function renderErrorLog() {
-    const container = document.getElementById('ml-error-log-body');
-    if (!container) return;
-    if (errorLog.length === 0) {
-      container.innerHTML = '<span style="color:#666; font-size:10px;">Sin errores registrados.</span>';
-      return;
-    }
-    container.innerHTML = errorLog.slice(-30).reverse().map((e) => {
-      const typeColor = e.type.indexOf('HTTP 4') !== -1 || e.type.indexOf('HTTP 5') !== -1 ? '#ff9800'
-        : e.type.indexOf('PARSE') !== -1 ? '#e91e63'
-        : e.type.indexOf('VISIT') !== -1 ? '#9c27b0'
-        : '#ff5252';
-      return `<div class="ml-error-entry"><span style="color:#888;">${e.ts}</span> <span style="color:${typeColor}; font-weight:bold;">[${escapeHtml(e.type)}]</span> ${escapeHtml(e.message)}</div>`;
-    }).join('');
-    // Update the badge count
+    // v6.5.0: persist to chrome.storage so the error-log tab can read it
+    persistErrorLog();
+    // Update badge count in the modal header (if visible)
     const badge = document.getElementById('ml-error-count');
     if (badge) badge.textContent = errorLog.length;
+  }
+
+  function persistErrorLog() {
+    try {
+      chrome.storage.local.set({ [STORAGE_KEY_ERROR_LOG]: errorLog });
+    } catch (e) { /* ignore */ }
+  }
+
+  async function loadErrorLog() {
+    try {
+      const data = await chrome.storage.local.get(STORAGE_KEY_ERROR_LOG);
+      const stored = data[STORAGE_KEY_ERROR_LOG];
+      if (Array.isArray(stored)) {
+        errorLog.length = 0;
+        for (const e of stored) errorLog.push(e);
+      }
+    } catch (e) { /* ignore */ }
   }
 
   /* ------------------------------------------------------------------ */
@@ -1537,13 +1567,28 @@
     const currencySymbol = currencyEl ? (currencyEl.innerText || '').trim() : '';
     const parsedPrice = parsePrice(priceAria, priceFraction, currencySymbol);
 
-    // 4. Score
+    // 4. Score + review count (v6.5.0: also extract number of reviews)
     const scoreEl = queryFirst(doc, [
       '.ui-pdp-review__rating',
       '.ui-pdp-review .andes-rating__label',
       '.andes-rating__label'
     ]);
     const scoreVal = scoreEl ? parseFloat((scoreEl.innerText || scoreEl.textContent || '').trim().replace(',', '.')) : 0;
+
+    // v6.5.0: extract review count from "(416)" or "416 opiniones"
+    const reviewAmountEl = queryFirst(doc, ['.ui-pdp-review__amount', '.ui-pdp-review__label .ui-pdp-review__amount']);
+    const reviewsHiddenEl = queryFirst(doc, ['.ui-pdp-review__label .andes-visually-hidden', '.andes-visually-hidden']);
+    let reviewCount = 0;
+    if (reviewAmountEl) {
+      const amtText = (reviewAmountEl.innerText || reviewAmountEl.textContent || '').trim();
+      const m = amtText.match(/\((\d+)\)/);
+      if (m) reviewCount = parseInt(m[1], 10);
+    }
+    if (!reviewCount && reviewsHiddenEl) {
+      const hiddenText = (reviewsHiddenEl.innerText || reviewsHiddenEl.textContent || '').trim();
+      const m = hiddenText.match(/(\d+)\s+opiniones/i);
+      if (m) reviewCount = parseInt(m[1], 10);
+    }
 
     // 5. Sales
     const subtitleEl = queryFirst(doc, [
@@ -1555,6 +1600,11 @@
       const txt = subtitleEl.innerText || subtitleEl.textContent || '';
       const salesMatch = txt.match(/\+?([0-9.,]+)\s*vendidos/i);
       if (salesMatch) salesCount = parseInt(salesMatch[1].replace(/\./g, '').replace(',', ''), 10);
+      // Also try "Más de N vendidos" format
+      if (!salesCount) {
+        const masMatch = txt.match(/m[aá]s\s+de\s+([0-9.,]+)/i);
+        if (masMatch) salesCount = parseInt(masMatch[1].replace(/\./g, '').replace(',', ''), 10);
+      }
     }
 
     // 6. Location
@@ -1565,7 +1615,7 @@
     ]);
     const locationText = locEl ? (locEl.innerText || locEl.textContent || '').trim() : 'No especificada';
 
-    // 7. Seller
+    // 7. Seller name
     const sellerEl = queryFirst(doc, [
       '.ui-seller-data-header__title span',
       '.ui-seller-data-header__title',
@@ -1575,6 +1625,41 @@
     ]);
     const sellerName = sellerEl ? (sellerEl.innerText || sellerEl.textContent || '').trim() : 'No especificado';
 
+    // v6.5.0: extract seller followers, products, sales from #seller_data block
+    let sellerFollowers = 'N/A';
+    let sellerProducts = 'N/A';
+    let sellerSales = 'N/A';
+    let sellerRecommendPct = 'N/A';
+    let sellerYearsML = 'N/A';
+
+    const followersEl = queryFirst(doc, ['.ui-seller-data-header__followers', '.ui-seller-data-header__followers span span']);
+    if (followersEl) {
+      const fText = (followersEl.innerText || followersEl.textContent || '').trim();
+      const m = fText.match(/\+?([0-9.,]+(?:\s*mil)?)/i);
+      if (m) sellerFollowers = m[1];
+    }
+
+    const sellerProductsEl = queryFirst(doc, ['.ui-seller-data-header__products', '.ui-seller-data-header__products span span']);
+    if (sellerProductsEl) {
+      const pText = (sellerProductsEl.innerText || sellerProductsEl.textContent || '').trim();
+      const m = pText.match(/\+?([0-9.,]+k?mil?)/i);
+      if (m) sellerProducts = m[1];
+    }
+
+    // Seller sales/recommendation/years: these are in .ui-seller-data-status__info blocks
+    // Each block has .info-title (value) + .info-subtitle (label: "Ventas" / "De compradores..." / "En Mercado Libre")
+    const sellerInfoBlocks = doc.querySelectorAll('.ui-seller-data-status__info');
+    sellerInfoBlocks.forEach((block) => {
+      const titleEl = block.querySelector('.ui-seller-data-status__info-title');
+      const subtitleInfoEl = block.querySelector('.ui-seller-data-status__info-subtitle');
+      if (!titleEl || !subtitleInfoEl) return;
+      const val = (titleEl.innerText || titleEl.textContent || '').trim();
+      const label = (subtitleInfoEl.innerText || subtitleInfoEl.textContent || '').trim().toLowerCase();
+      if (label.indexOf('ventas') !== -1) sellerSales = val;
+      else if (label.indexOf('recomiendan') !== -1) sellerRecommendPct = val;
+      else if (label.indexOf('mercado libre') !== -1) sellerYearsML = val;
+    });
+
     // 8. Seller status + breadcrumbs
     const statusEl = queryFirst(doc, [
       '.ui-seller-data-status__title',
@@ -1583,7 +1668,10 @@
     const breadcrumbs = doc.querySelectorAll('.andes-breadcrumb a.andes-breadcrumb__link, nav.andes-breadcrumb a');
 
     // 9. Technical specifications — brand & model
+    // v6.5.0: added .ui-vpp-striped-specs__table selectors for current ML layout
     const specsTables = doc.querySelectorAll(
+      '.ui-vpp-striped-specs__table table, ' +
+      '.ui-vpp-striped-specs table, ' +
       '.ui-pdp-container__row--technical-specifications table, ' +
       '.ui-pdp-specifications table, ' +
       '.ui-pdp-specs table, ' +
@@ -1607,6 +1695,13 @@
       });
     });
 
+    // v6.5.0: also extract highlighted specs (the icon-based ones at the top)
+    const highlightedSpecs = doc.querySelectorAll('.ui-vpp-highlighted-specs__key-value__labels__key-value');
+    highlightedSpecs.forEach((hs) => {
+      const txt = (hs.innerText || hs.textContent || '').trim();
+      if (txt) specList.push(txt);
+    });
+
     // 10. Google breakout URL for seller OSINT
     const googleQuery = encodeURIComponent(`"${sellerName}" Venezuela (whatsapp OR instagram OR rif OR telefono OR tienda)`);
     const googleBreakoutUrl = `https://www.google.com/search?q=${googleQuery}`;
@@ -1616,13 +1711,18 @@
       id: mlvId || ('art_' + Math.random().toString(36).substr(2, 9)),
       Nombre: title,
       Precio_Numerico: parsedPrice.num,
-      Precio_Detallado: parsedPrice.text,
       Moneda: parsedPrice.currency,
       Score: isNaN(scoreVal) ? 0 : scoreVal,
+      Opiniones: reviewCount,           // v6.5.0: number of reviews (416)
       Ventas: salesCount,
       Ubicacion: locationText,
       Vendedor_Nombre: sellerName,
       Vendedor_Estatus: statusEl ? (statusEl.innerText || statusEl.textContent || '').trim() : 'N/A',
+      Vendedor_Seguidores: sellerFollowers,    // v6.5.0
+      Vendedor_Productos: sellerProducts,      // v6.5.0
+      Vendedor_Ventas: sellerSales,            // v6.5.0
+      Vendedor_Recomendacion: sellerRecommendPct,  // v6.5.0
+      Vendedor_AniosML: sellerYearsML,         // v6.5.0
       Categorias: Array.from(breadcrumbs).map((b) => (b.innerText || b.textContent || '').trim()).join(' > '),
       Marca: brand,
       Modelo: model,
@@ -1630,7 +1730,7 @@
       Imagen: imageSrc,
       Link: (targetUrl || '').split('?')[0],
       Google_Breakout_Vendedor: googleBreakoutUrl,
-      Visitas: 0,                    // v6.3.0: populated by ML visits API (separate fetch)
+      Visitas: 0,
       DeepExtracted: true
     };
   }
@@ -1805,21 +1905,27 @@
     }
 
     const headers = [
-      'Nombre', 'Precio_Numerico', 'Score', 'Ventas_Estimadas',
+      'Nombre', 'Precio_Numerico', 'Score', 'Opiniones', 'Ventas_Estimadas',
       'Visitas_10dias',
-      'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Ubicacion_Tienda',
-      'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
+      'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Vendedor_Seguidores', 'Vendedor_Productos', 'Vendedor_Ventas', 'Vendedor_Recomendacion', 'Vendedor_AniosML',
+      'Ubicacion_Tienda', 'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
     ];
 
     const rows = validProducts.map((p) => [
       csvCell(p.Nombre),
       csvCell(p.Precio_Numerico || 0),
       csvCell(p.Score || 0),
+      csvCell(p.Opiniones || 0),
       csvCell(p.Ventas || 0),
       csvCell(p.Visitas || 0),
       csvCell(p.EnvioGratis || 'No'),
       csvCell(p.Vendedor_Nombre || 'N/A'),
       csvCell(p.Vendedor_Estatus || 'N/A'),
+      csvCell(p.Vendedor_Seguidores || 'N/A'),
+      csvCell(p.Vendedor_Productos || 'N/A'),
+      csvCell(p.Vendedor_Ventas || 'N/A'),
+      csvCell(p.Vendedor_Recomendacion || 'N/A'),
+      csvCell(p.Vendedor_AniosML || 'N/A'),
       csvCell(p.Ubicacion || 'N/A'),
       csvCell(p.Categorias || 'N/A'),
       csvCell(p.Marca || 'N/A'),
@@ -1848,6 +1954,7 @@
 
   async function boot() {
     await loadAll();
+    await loadErrorLog();   // v6.5.0: load persisted error log
     buildModal();
     renderResults();
     renderQueueUI();
@@ -1855,6 +1962,10 @@
 
     // Sync panel visibility with shared storage
     applyPanelVisibility();
+
+    // v6.5.0: update error count badge on load
+    const badge = document.getElementById('ml-error-count');
+    if (badge) badge.textContent = errorLog.length;
 
     setDebugger(`[V${EXT_VERSION}] Conectado. ${products.length} productos en almacenamiento compartido.`);
   }

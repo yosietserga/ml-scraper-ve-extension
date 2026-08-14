@@ -116,17 +116,21 @@
     }
     // Generate CSV here in the popup context (has DOM access).
     const headers = [
-      'Nombre', 'Precio_Numerico', 'Score', 'Ventas_Estimadas',
+      'Nombre', 'Precio_Numerico', 'Score', 'Opiniones', 'Ventas_Estimadas',
       'Visitas_10dias',
-      'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Ubicacion_Tienda',
-      'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
+      'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Vendedor_Seguidores', 'Vendedor_Productos', 'Vendedor_Ventas', 'Vendedor_Recomendacion', 'Vendedor_AniosML',
+      'Ubicacion_Tienda', 'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
     ];
     const cell = (v) => '"' + (v === null || v === undefined ? '' : String(v)).replace(/"/g, '""') + '"';
     const rows = validProducts.map((p) => [
-      cell(p.Nombre), cell(p.Precio_Numerico || 0), cell(p.Score || 0), cell(p.Ventas || 0),
+      cell(p.Nombre), cell(p.Precio_Numerico || 0), cell(p.Score || 0), cell(p.Opiniones || 0), cell(p.Ventas || 0),
       cell(p.Visitas || 0),
       cell(p.EnvioGratis || 'No'), cell(p.Vendedor_Nombre || 'N/A'),
-      cell(p.Vendedor_Estatus || 'N/A'), cell(p.Ubicacion || 'N/A'),
+      cell(p.Vendedor_Estatus || 'N/A'),
+      cell(p.Vendedor_Seguidores || 'N/A'), cell(p.Vendedor_Productos || 'N/A'),
+      cell(p.Vendedor_Ventas || 'N/A'), cell(p.Vendedor_Recomendacion || 'N/A'),
+      cell(p.Vendedor_AniosML || 'N/A'),
+      cell(p.Ubicacion || 'N/A'),
       cell(p.Categorias || 'N/A'), cell(p.Marca || 'N/A'), cell(p.Modelo || 'N/A'),
       cell(p.Especificaciones || 'N/A'), cell(p.Imagen || ''), cell(p.Link || ''),
       cell(p.Google_Breakout_Vendedor || '')
