@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.5.0';
+  const EXT_VERSION = '6.5.1';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -765,6 +765,27 @@
     return m ? m[0].replace(/[-_]/g, '').toUpperCase() : null;
   }
 
+  /** v6.5.1: Clean a MercadoLibre permalink URL.
+   *  - Strips URL fragment (#tracking_junk...) and query params
+   *  - Normalizes MLV-XXXX to MLVXXXX (no hyphen) in the path
+   *  - Returns just the canonical article URL:
+   *    https://articulo.mercadolibre.com.ve/MLV577501252-product-name-_JM
+   */
+  function cleanPermalink(url) {
+    if (!url) return '';
+    try {
+      const u = new URL(url);
+      // Strip fragment and query — ML articles don't need them
+      // Normalize MLV-XXXX → MLVXXXX in pathname (v6.5.0 id format)
+      const cleanPath = u.pathname.replace(/MLV[-_](\d+)/i, 'MLV$1');
+      return u.origin + cleanPath;
+    } catch (e) {
+      // Fallback: strip # and ? manually
+      return String(url).split('#')[0].split('?')[0]
+        .replace(/MLV[-_](\d+)/i, 'MLV$1');
+    }
+  }
+
   function buildOffsetUrl(base, offset) {
     // `base` can be either:
     //   (a) a slug like '/licuadora' or '/electrodomesticos/cocina/licuadoras'
@@ -952,7 +973,7 @@
       const currencySymbol = currencyEl ? (currencyEl.innerText || '').trim() : '';
       const reviewsText = reviewsEl ? (reviewsEl.innerText || reviewsEl.textContent || '').trim() : '';
       const shippingText = shippingEl ? (shippingEl.innerText || shippingEl.textContent || '').trim() : '';
-      const permalink = linkEl ? linkEl.href : '';
+      const permalink = linkEl ? cleanPermalink(linkEl.href) : '';
 
       const parsedPrice = parsePrice(priceAttr, priceFraction, currencySymbol);
       const scoreMatch = reviewsText.match(/Calificación\s+([0-9.,]+)\s+de\s+5/i);
@@ -1728,7 +1749,7 @@
       Modelo: model,
       Especificaciones: specList.join(' | '),
       Imagen: imageSrc,
-      Link: (targetUrl || '').split('?')[0],
+      Link: cleanPermalink(targetUrl),
       Google_Breakout_Vendedor: googleBreakoutUrl,
       Visitas: 0,
       DeepExtracted: true
