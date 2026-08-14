@@ -91,7 +91,9 @@
     const allSales = products.map((p) => p.Ventas || 0);
     const allScores = products.map((p) => p.Score || 0);
     const allPrices = products.map((p) => p.Precio_Numerico || 0);
+    const allVisits = products.map((p) => p.Visitas || 0);    // v6.3.0: real visit counts
     const totalSales = sum(allSales);
+    const totalVisits = sum(allVisits);                          // v6.3.0
     const avgScore = mean(allScores);
     const avgPrice = mean(allPrices);
     const priceMed = median(allPrices);
@@ -101,6 +103,8 @@
     const sortedSales = [...allSales].sort((a, b) => a - b);
     const sortedScores = [...allScores].sort((a, b) => a - b);
     const sortedPrices = [...allPrices].sort((a, b) => a - b);
+    const sortedVisits = [...allVisits].sort((a, b) => a - b);  // v6.3.0
+    const hasVisits = totalVisits > 0;                            // v6.3.0: only use visits if any product has them
 
     // --- Seller aggregation ---
     const sellerMap = new Map();
@@ -184,10 +188,27 @@
       const catName = (p.Categorias || 'N/A').split(' > ')[0] || 'N/A';
       const catHotness = maxCategorySales > 0 ? (categorySalesMap.get(catName) || 0) / maxCategorySales : 0;
 
-      const score = sp * 35 + scp * 15 + (1 - dominance) * 25 + priceReason * 15 + catHotness * 10;
+      // v6.3.0: incorporate real visit count when available.
+      // Visit percentile is a stronger demand signal than sales (visits =
+      // people looking, sales = people buying — high visits + low sales =
+      // demand without good execution = opportunity).
+      // When visits are present, reweight: demand 25% (sales) + 15% (visits).
+      // When no visits, fall back to the v6.1.0 weighting.
+      let vp = 0;
+      let score;
+      if (hasVisits) {
+        vp = percentile(p.Visitas || 0, sortedVisits);
+        // demand 25% (sales) + 15% (visits) + quality 15% + openness 20% + price 15% + category 10%
+        score = sp * 25 + vp * 15 + scp * 15 + (1 - dominance) * 20 + priceReason * 15 + catHotness * 10;
+      } else {
+        // original v6.1.0 weighting: demand 35% + quality 15% + openness 25% + price 15% + category 10%
+        score = sp * 35 + scp * 15 + (1 - dominance) * 25 + priceReason * 15 + catHotness * 10;
+      }
 
       const reasons = [];
       if (sp > 0.8) reasons.push(`Alta demanda (Top ${(100 - sp * 100).toFixed(0)}% en ventas)`);
+      if (hasVisits && vp > 0.8) reasons.push(`Alto tráfico (Top ${(100 - vp * 100).toFixed(0)}% en visitas, ${p.Visitas} visitas/10d)`);
+      if (hasVisits && vp > 0.7 && sp < 0.5) reasons.push(`Demanda latente: muchas visitas pero pocas ventas (oportunidad de mejora)`);
       if (scp > 0.7) reasons.push(`Buena calidad (★ ${p.Score})`);
       if (dominance < 0.1) reasons.push(`Vendedor no dominante (${pct(dominance)} share)`);
       if (priceReason > 0.7) reasons.push(`Precio cercano a la mediana ($${fmt(p.Precio_Numerico)})`);
@@ -198,6 +219,7 @@
         score: Math.round(score * 10) / 10,
         components: {
           sp: Math.round(sp * 100),
+          vp: Math.round(vp * 100),    // v6.3.0
           scp: Math.round(scp * 100),
           dom: Math.round(dominance * 100),
           pr: Math.round(priceReason * 100),
@@ -209,13 +231,14 @@
 
     return {
       numProducts, numSellers, numCategories,
-      totalSales, avgScore, avgPrice, priceMed, priceStd,
+      totalSales, totalVisits, hasVisits,         // v6.3.0
+      avgScore, avgPrice, priceMed, priceStd,
       totalRevenue,
       sellers, categories,
       bySales, byScore, byRevenue,
       porter, foda, a1List,
       hhiVal, top3Share, numDominantSellers, numSmallSellers,
-      sortedSales, sortedScores, sortedPrices
+      sortedSales, sortedScores, sortedPrices, sortedVisits
     };
   }
 
@@ -385,6 +408,12 @@
     $('stat-avg-price').textContent = '$' + fmt(a.avgPrice);
     $('stat-total-revenue').textContent = '$' + fmt(a.totalRevenue, 0);
     $('stat-hhi').textContent = fmt(a.hhiVal, 3);
+    // v6.3.0: total visits (only meaningful if deep-extracted + visits API called)
+    const visitsEl = $('stat-total-visits');
+    if (visitsEl) {
+      visitsEl.textContent = a.hasVisits ? a.totalVisits.toLocaleString('es-VE') : '—';
+      visitsEl.title = a.hasVisits ? `${a.totalVisits.toLocaleString('es-VE')} visitas reales (últimos 10 días, ML API)` : 'Ejecuta extracción profunda para obtener visitas';
+    }
   }
 
   function renderRankings(a) {
@@ -542,11 +571,12 @@
   }
 
   function exportA1CSV(a) {
-    const headers = ['Rank', 'Opportunity_Score', 'Nombre', 'Vendedor', 'Precio', 'Moneda', 'Score', 'Ventas', 'Demanda_Pct', 'Calidad_Pct', 'Dominancia_Pct', 'Precio_Fit_Pct', 'Categoria_Hot_Pct', 'Razones', 'Link'];
+    const headers = ['Rank', 'Opportunity_Score', 'Nombre', 'Vendedor', 'Precio', 'Moneda', 'Score', 'Ventas', 'Visitas_10d', 'Demanda_Pct', 'Visitas_Pct', 'Calidad_Pct', 'Dominancia_Pct', 'Precio_Fit_Pct', 'Categoria_Hot_Pct', 'Razones', 'Link'];
     const rows = a.a1List.slice(0, 50).map((item, i) => {
       const p = item.product;
       return [i + 1, item.score, csv(p.Nombre), csv(p.Vendedor_Nombre), csv(p.Precio_Numerico), csv(p.Moneda),
-      csv(p.Score), csv(p.Ventas), item.components.sp, item.components.scp, item.components.dom, item.components.pr, item.components.ch,
+      csv(p.Score), csv(p.Ventas), csv(p.Visitas || 0),
+      item.components.sp, item.components.vp, item.components.scp, item.components.dom, item.components.pr, item.components.ch,
       csv(item.reasons.join(' | ')), csv(p.Link)].join(',');
     });
     const csvStr = '\uFEFF' + [headers.join(','), ...rows].join('\r\n');

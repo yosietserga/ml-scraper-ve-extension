@@ -103,6 +103,7 @@
     // Generate CSV here in the popup context (has DOM access).
     const headers = [
       'Nombre', 'Precio_Numerico', 'Moneda', 'Precio_Detallado', 'Score', 'Ventas_Estimadas',
+      'Visitas_10dias',
       'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Ubicacion_Tienda',
       'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
     ];
@@ -110,6 +111,7 @@
     const rows = r.products.map((p) => [
       cell(p.Nombre), cell(p.Precio_Numerico || 0), cell(p.Moneda || 'N/A'),
       cell(p.Precio_Detallado || ''), cell(p.Score || 0), cell(p.Ventas || 0),
+      cell(p.Visitas || 0),
       cell(p.EnvioGratis || 'No'), cell(p.Vendedor_Nombre || 'N/A'),
       cell(p.Vendedor_Estatus || 'N/A'), cell(p.Ubicacion || 'N/A'),
       cell(p.Categorias || 'N/A'), cell(p.Marca || 'N/A'), cell(p.Modelo || 'N/A'),

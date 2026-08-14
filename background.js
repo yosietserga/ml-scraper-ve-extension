@@ -19,6 +19,8 @@
 const STORAGE_KEYS = {
   PRODUCTS: 'ml_products',
   DEEP_QUEUE: 'ml_deep_queue',
+  QUEUE_WORK: 'ml_queue_work',       // v6.3.0: persisted crawl phrase/URL queue (multi-tab sync)
+  ACCESS_TOKEN: 'ml_access_token',   // v6.3.0: ML API token for visits endpoint
   CONFIG: 'ml_config',
   PANEL_VISIBLE: 'ml_panel_visible'
 };
@@ -39,6 +41,8 @@ chrome.runtime.onInstalled.addListener(async () => {
   const patch = {};
   if (!Array.isArray(cur[STORAGE_KEYS.PRODUCTS])) patch[STORAGE_KEYS.PRODUCTS] = [];
   if (!Array.isArray(cur[STORAGE_KEYS.DEEP_QUEUE])) patch[STORAGE_KEYS.DEEP_QUEUE] = [];
+  if (!Array.isArray(cur[STORAGE_KEYS.QUEUE_WORK])) patch[STORAGE_KEYS.QUEUE_WORK] = [];
+  if (typeof cur[STORAGE_KEYS.ACCESS_TOKEN] !== 'string') patch[STORAGE_KEYS.ACCESS_TOKEN] = '';
   if (typeof cur[STORAGE_KEYS.CONFIG] !== 'object' || cur[STORAGE_KEYS.CONFIG] === null) {
     patch[STORAGE_KEYS.CONFIG] = DEFAULT_CONFIG;
   }
@@ -144,6 +148,82 @@ async function setDeepQueue(queue) {
   scheduleFlush();
 }
 
+/** REPLACE (not merge) the entire products array. Used by the reset button. */
+async function replaceProducts(products) {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  const arr = Array.isArray(products) ? products : [];
+  productsCache = new Map();
+  for (const p of arr) {
+    if (!p || typeof p !== 'object') continue;
+    const id = p.id || extractMlvId(p.Link) || p.Nombre;
+    if (id) productsCache.set(id, { ...p, id });
+  }
+  await chrome.storage.local.set({ [STORAGE_KEYS.PRODUCTS]: Array.from(productsCache.values()) });
+}
+
+/** REPLACE (not merge) the deep queue. Used by reset. */
+async function replaceDeepQueue(queue) {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  await ensureCacheLoaded();
+  const seen = new Set();
+  const out = [];
+  for (const item of (Array.isArray(queue) ? queue : [])) {
+    if (!item) continue;
+    const id = typeof item === 'string' ? extractMlvId(item) || item : (item.id || extractMlvId(item.Link) || item.Link);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(item);
+  }
+  deepQueueCache = out;
+  await chrome.storage.local.set({ [STORAGE_KEYS.DEEP_QUEUE]: out });
+}
+
+/** Persist the crawl phrase/URL queue (so reset syncs across tabs). */
+async function setQueueWork(queue) {
+  const arr = Array.isArray(queue) ? queue : [];
+  await chrome.storage.local.set({ [STORAGE_KEYS.QUEUE_WORK]: arr });
+}
+
+/* ------------------------------------------------------------------ */
+/* ML Visits API proxy                                                */
+/*                                                                    */
+/* Calls GET /items/{item_id}/visits/time_window on api.mercadolibre  */
+/* on behalf of the content script. Content scripts can't call the   */
+/* API directly because of CORS — only the SW (with host_permissions) */
+/* can. The endpoint is public but accepts an optional Bearer token  */
+/* for higher rate limits.                                            */
+/* ------------------------------------------------------------------ */
+
+async function fetchVisits(itemId, accessToken) {
+  if (!itemId) return { success: false, error: 'No item id' };
+  // ML item ids in VE look like MLV752021494. The visits API accepts them
+  // as-is (no country prefix needed — the id encodes the site).
+  const url = `https://api.mercadolibre.com/items/${encodeURIComponent(itemId)}/visits/time_window?last=10&unit=day`;
+  const headers = {};
+  if (accessToken && typeof accessToken === 'string' && accessToken.trim()) {
+    headers['Authorization'] = 'Bearer ' + accessToken.trim();
+  }
+  try {
+    const response = await fetch(url, { headers, credentials: 'omit' });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return { success: false, error: 'HTTP ' + response.status, body: text };
+    }
+    const data = await response.json();
+    // API returns: [{ date, total, visits_delayed }, ...] (10 days by default)
+    // Sum total visits across the window.
+    let totalVisits = 0;
+    if (Array.isArray(data)) {
+      for (const day of data) {
+        if (day && typeof day.total === 'number') totalVisits += day.total;
+      }
+    }
+    return { success: true, visits: totalVisits, raw: data };
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Message router                                                     */
 /* ------------------------------------------------------------------ */
@@ -182,6 +262,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return true;
     }
 
+    case 'SAVE_QUEUE_WORK': {
+      setQueueWork(request.queueWork || [])
+        .then(() => sendResponse({ success: true }))
+        .catch((err) => sendResponse({ success: false, error: String(err) }));
+      return true;
+    }
+
+    case 'SET_ACCESS_TOKEN': {
+      chrome.storage.local.set({ [STORAGE_KEYS.ACCESS_TOKEN]: String(request.token || '') })
+        .then(() => sendResponse({ success: true }))
+        .catch((err) => sendResponse({ success: false, error: String(err) }));
+      return true;
+    }
+
+    case 'FETCH_VISITS': {
+      (async () => {
+        const tokenData = await chrome.storage.local.get(STORAGE_KEYS.ACCESS_TOKEN);
+        const token = tokenData[STORAGE_KEYS.ACCESS_TOKEN] || '';
+        const result = await fetchVisits(request.itemId, token);
+        sendResponse(result);
+      })().catch((err) => sendResponse({ success: false, error: String(err) }));
+      return true;
+    }
+
     case 'GET_ALL_DATA': {
       (async () => {
         await flushNow();
@@ -189,6 +293,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({
           products: Array.isArray(data[STORAGE_KEYS.PRODUCTS]) ? data[STORAGE_KEYS.PRODUCTS] : [],
           deepQueue: Array.isArray(data[STORAGE_KEYS.DEEP_QUEUE]) ? data[STORAGE_KEYS.DEEP_QUEUE] : [],
+          queueWork: Array.isArray(data[STORAGE_KEYS.QUEUE_WORK]) ? data[STORAGE_KEYS.QUEUE_WORK] : [],
+          accessToken: typeof data[STORAGE_KEYS.ACCESS_TOKEN] === 'string' ? data[STORAGE_KEYS.ACCESS_TOKEN] : '',
           config: data[STORAGE_KEYS.CONFIG] || DEFAULT_CONFIG,
           panelVisible: data[STORAGE_KEYS.PANEL_VISIBLE] !== false
         });
@@ -201,9 +307,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
         productsCache = new Map();
         deepQueueCache = [];
+        // v6.3.0: also clear the crawl phrase/URL queue so reset syncs across tabs
         await chrome.storage.local.set({
           [STORAGE_KEYS.PRODUCTS]: [],
-          [STORAGE_KEYS.DEEP_QUEUE]: []
+          [STORAGE_KEYS.DEEP_QUEUE]: [],
+          [STORAGE_KEYS.QUEUE_WORK]: []
         });
         sendResponse({ success: true });
       })().catch((err) => sendResponse({ success: false, error: String(err) }));

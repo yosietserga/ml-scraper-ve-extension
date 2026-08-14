@@ -31,9 +31,11 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.2.0';
+  const EXT_VERSION = '6.3.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
+  const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
+  const STORAGE_KEY_ACCESS_TOKEN = 'ml_access_token';    // v6.3.0: ML API token for visits
   const STORAGE_KEY_PANEL = 'ml_panel_visible';
 
   /* ------------------------------------------------------------------ */
@@ -43,10 +45,10 @@
   let isArticlePage = computeIsArticlePage();
   let products = [];
   let deepQueue = [];
+  let queueWork = [];           // v6.3.0: now persisted (was local-only in v6.2.0)
   let panelVisible = true;
 
-  // Crawler state
-  let queueWork = [];
+  // Crawler state (queueWork is declared above — persisted across tabs in v6.3.0)
   let currentSearchProcess = null;
   let isCrawling = false;
   let isPaused = false;
@@ -116,13 +118,19 @@
 
   function persistProducts() { return sendMessage({ action: 'SAVE_PRODUCTS', products }); }
   function persistDeepQueue() { return sendMessage({ action: 'SAVE_DEEP_QUEUE', deepQueue }); }
+  function persistQueueWork() { return sendMessage({ action: 'SAVE_QUEUE_WORK', queueWork }); }
+  function setAccessToken(token) { return sendMessage({ action: 'SET_ACCESS_TOKEN', token }); }
 
   async function loadAll() {
     const r = await sendMessage({ action: 'GET_ALL_DATA' });
     if (r && r.success !== false) {
       products = Array.isArray(r.products) ? r.products : [];
       deepQueue = Array.isArray(r.deepQueue) ? r.deepQueue : [];
+      queueWork = Array.isArray(r.queueWork) ? r.queueWork : [];
       panelVisible = r.panelVisible !== false;
+      // Populate the access token field if present
+      const tokenInput = document.getElementById('cfg-access-token');
+      if (tokenInput && typeof r.accessToken === 'string') tokenInput.value = r.accessToken;
     }
   }
 
@@ -130,12 +138,20 @@
   // reflect it here. DEBOUNCED so a crawl that saves 100 pages doesn't
   // trigger 100 full re-renders (each O(n) at thousands of products).
   let renderDebounceTimer = null;
+  let queueRenderDebounceTimer = null;
   function debouncedRenderResults() {
     if (renderDebounceTimer) clearTimeout(renderDebounceTimer);
     renderDebounceTimer = setTimeout(() => {
       renderDebounceTimer = null;
       renderResults();
     }, 250);
+  }
+  function debouncedRenderQueue() {
+    if (queueRenderDebounceTimer) clearTimeout(queueRenderDebounceTimer);
+    queueRenderDebounceTimer = setTimeout(() => {
+      queueRenderDebounceTimer = null;
+      renderQueueUI();
+    }, 150);
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -148,6 +164,13 @@
     if (changes[STORAGE_KEY_QUEUE]) {
       deepQueue = Array.isArray(changes[STORAGE_KEY_QUEUE].newValue) ? changes[STORAGE_KEY_QUEUE].newValue : [];
       touched = true;
+    }
+    // v6.3.0: sync the crawl phrase/URL queue across tabs
+    if (changes[STORAGE_KEY_QUEUE_WORK]) {
+      queueWork = Array.isArray(changes[STORAGE_KEY_QUEUE_WORK].newValue) ? changes[STORAGE_KEY_QUEUE_WORK].newValue : [];
+      // Only re-render the queue UI; don't restart crawling in this tab
+      // (the tab that owns the active crawl continues it).
+      debouncedRenderQueue();
     }
     if (changes[STORAGE_KEY_PANEL]) {
       panelVisible = changes[STORAGE_KEY_PANEL].newValue !== false;
@@ -307,6 +330,7 @@
     .ml-item-details { font-size: 10px; color: #666; display: flex; gap: 6px; margin-top: 2px; flex-wrap: wrap; }
     .ml-item-price { font-weight: bold; color: #00a650; }
     .ml-badge-sales { background: #e3f2fd; color: #0d47a1; padding: 1px 4px; border-radius: 3px; font-weight: bold; font-size: 9px; }
+    .ml-badge-visits { background: #fce4ec; color: #ad1457; padding: 1px 4px; border-radius: 3px; font-weight: bold; font-size: 9px; }
     #ml-preview-card { position: fixed; width: 230px; background: #fff; border: 1px solid #ccc; border-radius: 8px; box-shadow: 0 8px 20px rgba(0,0,0,0.25); padding: 10px; z-index: 2147483647; pointer-events: none; display: none; font-size: 11px; }
     #ml-preview-card img { width: 100%; height: 140px; object-fit: contain; border-radius: 4px; margin-bottom: 6px; }
     #ml-notification-banner { display: none; background: #00a650; color: #fff; padding: 10px; border-radius: 6px; font-size: 12px; text-align: center; font-weight: bold; margin-bottom: 10px; }
@@ -442,6 +466,11 @@
             <label>Máx. Productos Total (0 = ilimitado):</label>
             <input type="number" id="cfg-max-products" value="0">
           </div>
+          <div class="ml-input-group">
+            <label>ML API Access Token (opcional, para visitas):</label>
+            <input type="password" id="cfg-access-token" placeholder="APP_USR-...-...-..." style="font-size:10px;">
+            <div style="font-size:9px; color:#888; margin-top:3px;">Pega tu token de ML para obtener visitas reales. Sin token, la API pública funciona pero con límites más bajos.</div>
+          </div>
           <div class="ml-btn-group" style="margin-top: 8px;">
             <button class="ml-btn ml-btn-purple" id="btn-open-analysis" style="flex:1;">📊 Abrir Análisis Estratégico</button>
           </div>
@@ -568,26 +597,38 @@
     const btnReset = document.getElementById('btn-reset');
     if (btnReset) {
       btnReset.onclick = () => {
+        // v6.3.0: use CLEAR_ALL which actually replaces (not merges) the
+        // products + deep queue + queueWork in storage. The old code used
+        // SAVE_PRODUCTS with [] which is a no-op because mergeProducts is
+        // additive — that's why the data "came back" when crawling restarted.
         isCrawling = false;
         isPaused = false;
         queueWork = [];
         visitedUrls.clear();
-        // Clear products + deep queue in shared storage
         products = [];
         deepQueue = [];
-        Promise.all([persistProducts(), persistDeepQueue()]).then(() => {
-          const statusEl = document.getElementById('ml-status');
-          if (statusEl) statusEl.innerText = 'Estado: Reseteado';
-          const countEl = document.getElementById('ml-count');
-          if (countEl) countEl.innerText = 'Productos: 0';
-          const progressEl = document.getElementById('ml-progress');
-          if (progressEl) progressEl.style.width = '0%';
-          const btnS = document.getElementById('btn-start');
-          if (btnS) btnS.disabled = false;
-          const btnP = document.getElementById('btn-toggle-pause');
-          if (btnP) { btnP.disabled = true; btnP.innerHTML = ICONS.pause; }
-          renderQueueUI();
-          renderResults();
+
+        // Update local UI immediately for responsiveness...
+        const statusEl = document.getElementById('ml-status');
+        if (statusEl) statusEl.innerText = 'Estado: Reseteado';
+        const countEl = document.getElementById('ml-count');
+        if (countEl) countEl.innerText = 'Productos: 0';
+        const progressEl = document.getElementById('ml-progress');
+        if (progressEl) progressEl.style.width = '0%';
+        const btnS = document.getElementById('btn-start');
+        if (btnS) btnS.disabled = false;
+        const btnP = document.getElementById('btn-toggle-pause');
+        if (btnP) { btnP.disabled = true; btnP.innerHTML = ICONS.pause; }
+        renderQueueUI();
+        renderResults();
+
+        // ...then broadcast CLEAR_ALL to the background, which replaces
+        // (not merges) the storage. The storage.onChanged event will fire
+        // in ALL open tabs, so they all reset too.
+        sendMessage({ action: 'CLEAR_ALL' }).then((r) => {
+          if (!r || !r.success) {
+            setDebugger('[Reset falló]: ' + (r && r.error ? r.error : 'sin respuesta'));
+          }
         });
       };
     }
@@ -609,6 +650,20 @@
           alert('No se pudo abrir el análisis: ' + e.message);
         }
       };
+    }
+
+    // v6.3.0: access token input — save on blur (debounced)
+    const tokenInput = document.getElementById('cfg-access-token');
+    if (tokenInput) {
+      let tokenSaveTimer = null;
+      const saveToken = () => {
+        setAccessToken(tokenInput.value || '');
+      };
+      tokenInput.addEventListener('input', () => {
+        if (tokenSaveTimer) clearTimeout(tokenSaveTimer);
+        tokenSaveTimer = setTimeout(saveToken, 800);
+      });
+      tokenInput.addEventListener('blur', saveToken);
     }
   }
 
@@ -787,6 +842,7 @@
           Vendedor_Nombre: 'Pendiente',
           Vendedor_Estatus: 'Pendiente',
           Google_Breakout_Vendedor: '',
+          Visitas: 0,                    // v6.3.0: populated by ML visits API during deep extraction
           DeepExtracted: false
         });
       }
@@ -882,6 +938,10 @@
       const scoreStr = escapeHtml(String(p.Score || 0));
       const salesStr = escapeHtml(p.Ventas > 0 ? ('+' + p.Ventas + ' vendidos') : 'Destacado');
       const currency = escapeHtml(p.Moneda || '');
+      // v6.3.0: show visit count if we have it (only populated after deep extraction + visits fetch)
+      const visitsStr = p.Visitas > 0
+        ? '<span class="ml-badge-visits" title="Visitas reales (10 días, ML API)">👁 ' + escapeHtml(String(p.Visitas)) + '</span>'
+        : '';
 
       card.innerHTML = `
         <img src="${imgSrc}" class="ml-item-img" alt="Product" onerror="this.style.opacity='0.3'">
@@ -891,6 +951,7 @@
             <span class="ml-item-price">${escapeHtml(currency ? currency + ' ' : '')}${escapeHtml(priceNum)}</span>
             <span>★ ${scoreStr}</span>
             <span class="ml-badge-sales">${salesStr}</span>
+            ${visitsStr}
           </div>
         </div>
         <div style="display:flex; gap:4px; align-items:center;">
@@ -915,6 +976,10 @@
         const pEnv = escapeHtml(p.EnvioGratis || 'No');
         const pCat = escapeHtml(p.Categorias || '');
         const pVend = escapeHtml(p.Vendedor_Nombre || '');
+        const pVisitas = escapeHtml(String(p.Visitas || 0));
+        const visitsLine = p.Visitas > 0
+          ? `<span style="color:#ad1457; font-weight:bold;">👁 Visitas: ${pVisitas} (10 días)</span><br>`
+          : '';
         const deepInfo = p.DeepExtracted
           ? `<div style="color:#2d3277; font-size:9px; margin-top:4px;"><b>Cat:</b> ${pCat}<br><b>Vendedor:</b> ${pVend}</div>`
           : '';
@@ -923,6 +988,7 @@
           <b>${pName}</b><br>
           <span style="color:#00a650; font-weight:bold;">Precio: ${escapeHtml(pCur ? pCur + ' ' : '')}${pPrice}</span><br>
           <span style="color:#0d47a1; font-weight:bold;">Ventas: +${pVentas} unidades</span><br>
+          ${visitsLine}
           <span>Score: ★ ${pScore} | Envío Gratis: ${pEnv}</span><br>
           ${deepInfo}
         `;
@@ -1071,6 +1137,8 @@
     });
 
     searchInput.value = '';
+    // v6.3.0: persist the queue so other tabs see it too
+    persistQueueWork();
     renderQueueUI();
     if (!isCrawling) processNextInQueue();
   }
@@ -1105,6 +1173,7 @@
         const cancelEl = el.querySelector('.cancel-q');
         if (cancelEl) cancelEl.onclick = () => {
           queueWork = queueWork.filter((q) => q.id !== item.id);
+          persistQueueWork();   // v6.3.0: sync across tabs
           renderQueueUI();
         };
       }
@@ -1112,6 +1181,7 @@
       if (item.status === 'done') {
         setTimeout(() => {
           queueWork = queueWork.filter((q) => q.id !== item.id);
+          persistQueueWork();   // v6.3.0: sync across tabs
           renderQueueUI();
         }, 2200);
       }
@@ -1135,6 +1205,7 @@
 
     currentSearchProcess = nextItem;
     nextItem.status = 'processing';
+    persistQueueWork();   // v6.3.0: sync status change across tabs
     renderQueueUI();
 
     // v6.2.0: support pasted raw URLs in addition to phrases.
@@ -1170,6 +1241,7 @@
     await runCrawler();
 
     nextItem.status = 'done';
+    persistQueueWork();   // v6.3.0: sync status change across tabs
     renderQueueUI();
     processNextInQueue();
   }
@@ -1369,6 +1441,7 @@
       Imagen: imageSrc,
       Link: (targetUrl || '').split('?')[0],
       Google_Breakout_Vendedor: googleBreakoutUrl,
+      Visitas: 0,                    // v6.3.0: populated by ML visits API (separate fetch)
       DeepExtracted: true
     };
   }
@@ -1410,6 +1483,26 @@
             products.push(extracted);
           }
           await persistProducts();
+
+          // v6.3.0: fetch real visit count from the ML API for this article.
+          // This is a separate network call to api.mercadolibre.com (proxied
+          // through the background SW to bypass CORS). The visit count is
+          // stored on the product as `Visitas` and used in A1 scoring.
+          try {
+            const visitResponse = await sendMessage({ action: 'FETCH_VISITS', itemId: mlvId });
+            if (visitResponse && visitResponse.success) {
+              const idx = products.findIndex((p) => extractMlvId(p.Link) === mlvId || p.id === mlvId);
+              if (idx >= 0) {
+                products[idx].Visitas = visitResponse.visits || 0;
+                await persistProducts();
+              }
+              setDebugger(`[Visitas ${mlvId}]: ${visitResponse.visits || 0} visitas en 10 días`);
+            } else if (visitResponse && visitResponse.error) {
+              setDebugger(`[Visitas ${mlvId} error]: ${visitResponse.error}`);
+            }
+          } catch (visitErr) {
+            setDebugger(`[Visitas ${mlvId} exception]: ${visitErr.message}`);
+          }
         } else {
           setDebugger('[Deep fetch error]: ' + (response && response.error ? response.error : 'sin respuesta'));
         }
@@ -1495,6 +1588,7 @@
 
     const headers = [
       'Nombre', 'Precio_Numerico', 'Moneda', 'Precio_Detallado', 'Score', 'Ventas_Estimadas',
+      'Visitas_10dias',   // v6.3.0: real visit count from ML API (0 = not yet fetched)
       'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Ubicacion_Tienda',
       'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
     ];
@@ -1506,6 +1600,7 @@
       csvCell(p.Precio_Detallado || ''),
       csvCell(p.Score || 0),
       csvCell(p.Ventas || 0),
+      csvCell(p.Visitas || 0),
       csvCell(p.EnvioGratis || 'No'),
       csvCell(p.Vendedor_Nombre || 'N/A'),
       csvCell(p.Vendedor_Estatus || 'N/A'),

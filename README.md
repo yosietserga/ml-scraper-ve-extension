@@ -1,8 +1,10 @@
-# MercadoLibre VE Scraper — Chrome Extension (v6.2.0)
+# MercadoLibre VE Scraper — Chrome Extension (v6.3.0)
 
-Advanced scraper for **MercadoLibre Venezuela** (`mercadolibre.com.ve`) packaged as a Manifest V3 Chrome extension. Crawl thousands of products, extract seller data, and generate **strategic business intelligence** — Porter's Five Forces, FODA/SWOT, and an A1 opportunity list of top products to import/resell.
+Advanced scraper for **MercadoLibre Venezuela** (`mercadolibre.com.ve`) packaged as a Manifest V3 Chrome extension. Crawl thousands of products, extract seller data, fetch **real visit counts** from the ML API, and generate **strategic business intelligence** — Porter's Five Forces, FODA/SWOT, and an A1 opportunity list of top products to import/resell.
 
-> **New in v6.2.0:** Paste any MercadoLibre URL (category, subcategory, or custom listing) to crawl it directly — no need to guess search phrases. See [Changelog](#changelog).
+> **New in v6.3.0:** Real article visits via ML API (`/items/{id}/visits/time_window`), true multi-tab reset sync (queueWork persisted), fixed the reset bug where data "came back" after restarting a crawl. See [Changelog](#changelog).
+>
+> **v6.2.0:** Paste any ML URL (category, subcategory, custom listing) to crawl it directly.
 >
 > **v6.1.0:** Strategic Analysis dashboard, scale fixes (debounced render, virtualized results, background cache, `unlimitedStorage`, HTTP 429 backoff, max-pages/products limits).
 >
@@ -169,6 +171,30 @@ The content script can't `fetch()` article pages directly because ML's CORS poli
 ---
 
 ## 🐛 Changelog
+
+### v6.3.0 — Real article visits + true multi-tab reset sync
+
+**New features:**
+- ✅ **Real article visits via ML API** — during deep extraction, the extension now calls `GET https://api.mercadolibre.com/items/{MLV_id}/visits/time_window?last=10&unit=day` to fetch the actual visit count for each article over the last 10 days. The visit count:
+  - Is displayed on each product card as `👁 N` (pink badge)
+  - Appears in the hover preview card
+  - Is exported as `Visitas_10dias` column in CSV
+  - Appears in the analysis dashboard's overview stats
+  - Is factored into the **A1 Opportunity Score** (15% weight when visits are present — demand signal stronger than sales alone)
+  - Triggers a new A1 rationale tag: "Demanda latente: muchas visitas pero pocas ventas (oportunidad de mejora)" — products with high visits but low sales are gold (proven demand, poor execution = your entry opportunity)
+- ✅ **Optional ML API access token** — paste your `APP_USR-...` token in the Filtros & Config tab for higher rate limits. The visits endpoint works without a token (public) but with lower limits. Token is stored in `chrome.storage.local` and shared across tabs.
+- ✅ **`api.mercadolibre.com` added to host_permissions** — required for the background service worker to call the ML API (content scripts can't due to CORS).
+
+**Bug fixes:**
+- ✅ **Fixed the reset bug** (critical) — the reset button used `SAVE_PRODUCTS` with an empty array `[]`, but `mergeProducts` is **additive** (merges by id), so an empty array was a no-op. The data was never actually cleared from storage — it just looked cleared in the UI because the local `products` variable was emptied, but the background cache + storage still held everything. When you started crawling again, `storage.onChanged` fired and repopulated the local variable from the never-cleared storage. **Fix:** the reset button now calls `CLEAR_ALL` which does `productsCache = new Map()` (replace, not merge) + `chrome.storage.local.set({ml_products: [], ml_deep_queue: [], ml_queue_work: []})`.
+- ✅ **True multi-tab reset sync** — `queueWork` (the crawl phrase/URL queue) is now persisted in `chrome.storage.local` under `ml_queue_work`. When you click reset in tab A, `CLEAR_ALL` clears all three storage keys, and `chrome.storage.onChanged` fires in every open ML tab, so they all reset too. Previously `queueWork` was local-only, so a reset in one tab didn't affect the queue in other tabs.
+
+**Architecture changes:**
+- Added `ml_queue_work` and `ml_access_token` storage keys
+- Added `REPLACE_PRODUCTS`, `REPLACE_DEEP_QUEUE`, `SAVE_QUEUE_WORK`, `SET_ACCESS_TOKEN`, `FETCH_VISITS` background message handlers
+- `CLEAR_ALL` now clears products + deepQueue + queueWork (was just products + deepQueue)
+- Content script syncs `queueWork` via `chrome.storage.onChanged` (debounced 150ms for queue renders, 250ms for product renders)
+- `GET_ALL_DATA` now returns `queueWork` and `accessToken` too
 
 ### v6.2.0 — Paste any MercadoLibre URL to crawl
 
