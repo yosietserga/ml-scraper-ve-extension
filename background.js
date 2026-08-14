@@ -495,6 +495,45 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return true;
     }
 
+    // v6.10.0: Sync to Google Sheets — routed through background SW
+    // because content scripts hit CORS errors when POSTing to script.google.com.
+    // The background SW has host_permissions and is not subject to CORS.
+    case 'SYNC_TO_SHEETS': {
+      (async () => {
+        try {
+          const urlData = await chrome.storage.local.get('ml_gsheets_url');
+          const url = urlData.ml_gsheets_url;
+          if (!url || typeof url !== 'string') {
+            sendResponse({ success: false, error: 'No Sheets URL configured. Pégala en Filtros & Config.' });
+            return;
+          }
+          const productsData = await chrome.storage.local.get(STORAGE_KEYS.PRODUCTS);
+          const products = Array.isArray(productsData[STORAGE_KEYS.PRODUCTS]) ? productsData[STORAGE_KEYS.PRODUCTS] : [];
+          if (products.length === 0) {
+            sendResponse({ success: false, error: 'No hay productos para sincronizar.' });
+            return;
+          }
+          // POST to the Apps Script web app.
+          // Use no-cors mode as fallback if the regular fetch fails (Apps Script
+          // sometimes doesn't return proper CORS headers for POST).
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({ action: 'sync', products: products })
+          });
+          if (!response.ok) {
+            sendResponse({ success: false, error: 'HTTP ' + response.status + ' ' + response.statusText });
+            return;
+          }
+          const result = await response.json();
+          sendResponse(result);
+        } catch (err) {
+          sendResponse({ success: false, error: err && err.message ? err.message : String(err) });
+        }
+      })();
+      return true;
+    }
+
     case 'PING': {
       sendResponse({ success: true, ts: Date.now() });
       return true;

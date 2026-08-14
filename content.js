@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.9.0';
+  const EXT_VERSION = '6.10.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -428,6 +428,10 @@
             <button class="ml-btn ml-btn-purple" id="btn-deep-extract" ${deepQueue.length === 0 ? 'disabled' : ''}>Extraer Artículos Seleccionados (<span id="deep-count">${deepQueue.length}</span>)</button>
             <button class="ml-btn ml-btn-success" id="btn-download" ${products.length === 0 ? 'disabled' : ''}>Descargar CSV</button>
           </div>
+          <div class="ml-btn-group" style="margin-bottom: 6px;">
+            <button class="ml-btn ml-btn-secondary" id="btn-select-all" style="flex:1; font-size:10px;">☑ Seleccionar Todos</button>
+            <button class="ml-btn ml-btn-secondary" id="btn-deselect-all" style="flex:1; font-size:10px;">☐ Deseleccionar Todos</button>
+          </div>
           <div style="display:flex; gap:6px; margin-bottom:8px;">
             <input type="text" id="filter-name" placeholder="Filtrar por nombre..." style="flex:2; padding:5px; font-size:11px; border:1px solid #ccc; border-radius:4px;">
             <select id="sort-results" style="flex:1; padding:5px; font-size:11px; border:1px solid #ccc; border-radius:4px;">
@@ -670,6 +674,40 @@
       };
     }
 
+    // v6.10.0: select all / deselect all for deep extraction
+    const btnSelectAll = document.getElementById('btn-select-all');
+    if (btnSelectAll) {
+      btnSelectAll.onclick = () => {
+        // Add all visible (filtered) products to deepQueue
+        const filterInput = document.getElementById('filter-name');
+        const filterText = (filterInput ? filterInput.value : '').toLowerCase();
+        const toAdd = products.filter((p) => (p.Nombre || '').toLowerCase().indexOf(filterText) !== -1);
+        let added = 0;
+        for (const p of toAdd) {
+          const exists = deepQueue.some((dq) => {
+            if (typeof dq === 'string') return dq === p.Link || dq === extractMlvId(p.Link) || dq === p.id;
+            return dq.id === p.id || dq.Link === p.Link;
+          });
+          if (!exists) {
+            deepQueue.push({ id: p.id, Link: p.Link, Nombre: p.Nombre });
+            added++;
+          }
+        }
+        persistDeepQueue().then(() => renderResults());
+        logActivity('SELECT_ALL', `Selected all: ${added} new products added to deep queue (total: ${deepQueue.length})`, 'info');
+      };
+    }
+
+    const btnDeselectAll = document.getElementById('btn-deselect-all');
+    if (btnDeselectAll) {
+      btnDeselectAll.onclick = () => {
+        const removed = deepQueue.length;
+        deepQueue = [];
+        persistDeepQueue().then(() => renderResults());
+        logActivity('DESELECT_ALL', `Deselected all: ${removed} products removed from deep queue`, 'info');
+      };
+    }
+
     const btnOpenAnalysis = document.getElementById('btn-open-analysis');
     if (btnOpenAnalysis) {
       btnOpenAnalysis.onclick = () => {
@@ -768,26 +806,16 @@
     const btn = document.getElementById('btn-sync-sheets');
     if (btn) { btn.disabled = true; btn.innerText = '📤 Sincronizando...'; }
 
-    logActivity('SHEETS_SYNC', `Syncing ${products.length} products to Google Sheets...`, 'info');
+    logActivity('SHEETS_SYNC', `Syncing ${products.length} products to Google Sheets via background SW...`, 'info');
 
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        mode: 'cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'sync', products: products })
-      });
-
-      if (!response.ok) {
-        throw new Error('HTTP ' + response.status + ' ' + response.statusText);
-      }
-
-      const result = await response.json();
-      if (result.success) {
+      // v6.10.0: route through background SW to avoid CORS
+      const result = await sendMessage({ action: 'SYNC_TO_SHEETS' });
+      if (result && result.success) {
         logActivity('SHEETS_SYNC', `Sync OK: ${result.appended} new, ${result.updated} updated, ${result.skipped} skipped (of ${result.total})`, 'info');
         alert(`✅ Sync completado!\n\nNuevos: ${result.appended}\nActualizados: ${result.updated}\nOmitidos: ${result.skipped}\nTotal: ${result.total}`);
       } else {
-        throw new Error(result.error || 'Unknown error');
+        throw new Error(result && result.error ? result.error : 'Unknown error');
       }
     } catch (err) {
       logActivity('SHEETS_SYNC', `Sync FAILED: ${err.message}`, 'error');

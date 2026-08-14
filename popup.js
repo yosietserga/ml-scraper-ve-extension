@@ -77,32 +77,15 @@
     chrome.tabs.create({ url: chrome.runtime.getURL('analysis.html') });
   });
 
-  // v6.9.0: sync to Google Sheets from popup
+  // v6.10.0: sync to Google Sheets via background SW (avoids CORS)
   $('btn-sync-sheets').addEventListener('click', async () => {
-    const r = await sendMessage({ action: 'EXPORT_CSV' });
-    if (!r || !r.success || !r.products || r.products.length === 0) {
-      toast('No hay productos para sincronizar');
-      return;
-    }
-    const data = await chrome.storage.local.get('ml_gsheets_url');
-    const url = data.ml_gsheets_url;
-    if (!url) {
-      toast('Pega la Sheets URL en Filtros & Config');
-      return;
-    }
     toast('Sincronizando...');
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        mode: 'cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'sync', products: r.products })
-      });
-      const result = await response.json();
-      if (result.success) {
+      const result = await sendMessage({ action: 'SYNC_TO_SHEETS' });
+      if (result && result.success) {
         toast(`✅ ${result.appended} nuevos, ${result.updated} actualizados`);
       } else {
-        toast('❌ ' + (result.error || 'Error'));
+        toast('❌ ' + (result && result.error ? result.error : 'Error'));
       }
     } catch (err) {
       toast('❌ ' + err.message);
