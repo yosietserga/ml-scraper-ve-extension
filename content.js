@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.10.0';
+  const EXT_VERSION = '6.11.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -400,15 +400,28 @@
             <label>Término(s) de Búsqueda o URL de MercadoLibre (Enter para agregar, coma o salto de línea para múltiples):</label>
             <textarea id="ml-search-input" rows="3" placeholder="Frases: licuadora, cafetera, tostadora&#10;O pega una URL: https://listado.mercadolibre.com.ve/electrodomesticos/cocina/licuadoras/"></textarea>
           </div>
+          <div class="ml-input-group">
+            <label>Máx. Páginas por frase/URL (0 = ilimitado):</label>
+            <input type="number" id="cfg-queue-max-pages" value="20" style="width:80px; font-size:11px;">
+          </div>
           <div class="ml-btn-group">
             <button class="ml-btn ml-btn-primary" id="btn-start">Iniciar Crawling</button>
             <button class="ml-btn ml-btn-secondary ml-btn-icon" id="btn-toggle-pause" title="Pausar / Resumir" disabled>${ICONS.pause}</button>
             <button class="ml-btn ml-btn-danger ml-btn-icon" id="btn-reset" title="Reset / Limpiar">${ICONS.reset}</button>
           </div>
+          <div class="ml-btn-group" style="margin-top: 4px;">
+            <button class="ml-btn ml-btn-secondary" id="btn-skip-page" title="Saltar a la siguiente página" style="flex:1; font-size:10px;" disabled>⏭ Saltar Página</button>
+            <button class="ml-btn ml-btn-secondary" id="btn-skip-phrase" title="Saltar a la siguiente frase/URL de la cola" style="flex:1; font-size:10px;" disabled>⏭ Saltar Frase</button>
+            <button class="ml-btn ml-btn-secondary" id="btn-stop-crawl" title="Detener crawling completamente" style="flex:1; font-size:10px;" disabled>⏹ Detener</button>
+          </div>
           <div class="ml-progress-bar"><div class="ml-progress-fill" id="ml-progress"></div></div>
           <div class="ml-stats">
             <span id="ml-status">Estado: En espera</span>
             <span id="ml-count">Productos: ${products.length}</span>
+          </div>
+          <div class="ml-stats" id="ml-eta" style="display:none; font-size:10px; color:#3483fa;">
+            <span>⏱ ETA: calculando...</span>
+            <span>📊 Página <span id="ml-current-page">0</span> / <span id="ml-total-pages">?</span></span>
           </div>
           <div class="ml-btn-group" style="margin-top: 8px;">
             <button class="ml-btn ml-btn-success" id="btn-download" ${products.length === 0 ? 'disabled' : ''}>Descargar CSV/Excel</button>
@@ -416,8 +429,20 @@
           <div class="ml-btn-group" style="margin-top: 4px;">
             <button class="ml-btn ml-btn-secondary" id="btn-use-current-url" title="Usa la URL completa de esta pestaña como punto de inicio (ideal para categorías y listados personalizados)" style="flex:1; font-size:10px;">🔗 Usar URL de esta pestaña</button>
           </div>
+          <!-- v6.11.0: Killer features -->
+          <div class="ml-btn-group" style="margin-top: 4px;">
+            <label style="font-size:10px; display:flex; align-items:center; gap:4px; cursor:pointer;">
+              <input type="checkbox" id="cfg-auto-deep" style="margin:0;"> 🚀 Auto Deep Extract al terminar
+            </label>
+            <label style="font-size:10px; display:flex; align-items:center; gap:4px; cursor:pointer;">
+              <input type="checkbox" id="cfg-auto-sync" style="margin:0;"> 📤 Auto Sync Sheets al terminar
+            </label>
+          </div>
           <div class="ml-queue-box">
-            <div class="ml-queue-title">Cola de Trabajo (Frases / URLs)</div>
+            <div class="ml-queue-title" style="display:flex; justify-content:space-between; align-items:center;">
+              <span>Cola de Trabajo (Frases / URLs)</span>
+              <span style="font-size:9px; color:#888;" id="queue-summary">${queueWork.length} items</span>
+            </div>
             <div id="queue-container"><span style="color:#888; font-size:10px;">Sin frases pendientes...</span></div>
           </div>
         </div>
@@ -429,8 +454,7 @@
             <button class="ml-btn ml-btn-success" id="btn-download" ${products.length === 0 ? 'disabled' : ''}>Descargar CSV</button>
           </div>
           <div class="ml-btn-group" style="margin-bottom: 6px;">
-            <button class="ml-btn ml-btn-secondary" id="btn-select-all" style="flex:1; font-size:10px;">☑ Seleccionar Todos</button>
-            <button class="ml-btn ml-btn-secondary" id="btn-deselect-all" style="flex:1; font-size:10px;">☐ Deseleccionar Todos</button>
+            <button class="ml-btn ml-btn-secondary" id="btn-toggle-selection" style="flex:1; font-size:10px;">☑ Toggle Selección</button>
           </div>
           <div style="display:flex; gap:6px; margin-bottom:8px;">
             <input type="text" id="filter-name" placeholder="Filtrar por nombre..." style="flex:2; padding:5px; font-size:11px; border:1px solid #ccc; border-radius:4px;">
@@ -627,6 +651,50 @@
       };
     }
 
+    // v6.11.0: skip current page, skip current phrase, stop crawl
+    const btnSkipPage = document.getElementById('btn-skip-page');
+    if (btnSkipPage) {
+      btnSkipPage.onclick = () => {
+        if (!isCrawling) return;
+        currentOffset += 48;  // skip to next page
+        logActivity('CRAWL_CONTROL', `Skipped page ${processedPagesCount}, jumping to offset ${currentOffset}`, 'info');
+        setDebugger(`[Skip]: Saltando a página ${processedPagesCount + 1}`);
+      };
+    }
+
+    const btnSkipPhrase = document.getElementById('btn-skip-phrase');
+    if (btnSkipPhrase) {
+      btnSkipPhrase.onclick = () => {
+        if (!isCrawling || !currentSearchProcess) return;
+        logActivity('CRAWL_CONTROL', `Skipping phrase "${currentSearchProcess.phrase}"`, 'info');
+        currentSearchProcess.status = 'done';  // mark as done so processNextInQueue moves on
+        isCrawling = false;  // break the while loop
+        setDebugger(`[Skip]: Saltando frase "${currentSearchProcess.phrase}"`);
+        setTimeout(() => processNextInQueue(), 200);
+      };
+    }
+
+    const btnStopCrawl = document.getElementById('btn-stop-crawl');
+    if (btnStopCrawl) {
+      btnStopCrawl.onclick = () => {
+        if (!isCrawling) return;
+        isCrawling = false;
+        isPaused = false;
+        logActivity('CRAWL_CONTROL', 'Crawl STOPPED by user', 'warn');
+        setDebugger('[Stop]: Crawling detenido por el usuario');
+        const btnS = document.getElementById('btn-start');
+        if (btnS) { btnS.disabled = false; btnS.classList.remove('animating'); }
+        const btnP = document.getElementById('btn-toggle-pause');
+        if (btnP) { btnP.disabled = true; btnP.innerHTML = ICONS.pause; }
+        if (btnSkipPage) btnSkipPage.disabled = true;
+        if (btnSkipPhrase) btnSkipPhrase.disabled = true;
+        if (btnStopCrawl) btnStopCrawl.disabled = true;
+        const etaEl = document.getElementById('ml-eta');
+        if (etaEl) etaEl.style.display = 'none';
+        if (modal) modal.classList.remove('crawling-active');
+      };
+    }
+
     const btnReset = document.getElementById('btn-reset');
     if (btnReset) {
       btnReset.onclick = () => {
@@ -674,37 +742,47 @@
       };
     }
 
-    // v6.10.0: select all / deselect all for deep extraction
-    const btnSelectAll = document.getElementById('btn-select-all');
-    if (btnSelectAll) {
-      btnSelectAll.onclick = () => {
-        // Add all visible (filtered) products to deepQueue
+    // v6.11.0: Toggle Selection — if all visible are selected, deselect all; else select all
+    const btnToggleSelection = document.getElementById('btn-toggle-selection');
+    if (btnToggleSelection) {
+      btnToggleSelection.onclick = () => {
         const filterInput = document.getElementById('filter-name');
         const filterText = (filterInput ? filterInput.value : '').toLowerCase();
-        const toAdd = products.filter((p) => (p.Nombre || '').toLowerCase().indexOf(filterText) !== -1);
-        let added = 0;
-        for (const p of toAdd) {
-          const exists = deepQueue.some((dq) => {
-            if (typeof dq === 'string') return dq === p.Link || dq === extractMlvId(p.Link) || dq === p.id;
-            return dq.id === p.id || dq.Link === p.Link;
+        const visible = products.filter((p) => (p.Nombre || '').toLowerCase().indexOf(filterText) !== -1);
+        
+        // Check if ALL visible products are already in the deep queue
+        const allSelected = visible.every((p) => deepQueue.some((dq) => {
+          if (typeof dq === 'string') return dq === p.Link || dq === extractMlvId(p.Link) || dq === p.id;
+          return dq.id === p.id || dq.Link === p.Link;
+        }));
+
+        if (allSelected) {
+          // Deselect only the visible ones
+          const visibleIds = new Set(visible.map(p => p.id));
+          const visibleLinks = new Set(visible.map(p => p.Link));
+          const visibleMlvs = new Set(visible.map(p => extractMlvId(p.Link)));
+          const removed = deepQueue.length;
+          deepQueue = deepQueue.filter((dq) => {
+            if (typeof dq === 'string') return !visibleMlvs.has(dq) && !visibleLinks.has(dq);
+            return !visibleIds.has(dq.id) && !visibleLinks.has(dq.Link);
           });
-          if (!exists) {
-            deepQueue.push({ id: p.id, Link: p.Link, Nombre: p.Nombre });
-            added++;
+          logActivity('TOGGLE_SEL', `Deselected ${removed - deepQueue.length} visible products (all were selected)`, 'info');
+        } else {
+          // Select all visible
+          let added = 0;
+          for (const p of visible) {
+            const exists = deepQueue.some((dq) => {
+              if (typeof dq === 'string') return dq === p.Link || dq === extractMlvId(p.Link) || dq === p.id;
+              return dq.id === p.id || dq.Link === p.Link;
+            });
+            if (!exists) {
+              deepQueue.push({ id: p.id, Link: p.Link, Nombre: p.Nombre });
+              added++;
+            }
           }
+          logActivity('TOGGLE_SEL', `Selected ${added} new products (total deep queue: ${deepQueue.length})`, 'info');
         }
         persistDeepQueue().then(() => renderResults());
-        logActivity('SELECT_ALL', `Selected all: ${added} new products added to deep queue (total: ${deepQueue.length})`, 'info');
-      };
-    }
-
-    const btnDeselectAll = document.getElementById('btn-deselect-all');
-    if (btnDeselectAll) {
-      btnDeselectAll.onclick = () => {
-        const removed = deepQueue.length;
-        deepQueue = [];
-        persistDeepQueue().then(() => renderResults());
-        logActivity('DESELECT_ALL', `Deselected all: ${removed} products removed from deep queue`, 'info');
       };
     }
 
@@ -1477,10 +1555,12 @@
       ? rawVal.split(/[\n,]+/).map((s) => s.trim()).filter((s) => s.length > 0)
       : [window.location.pathname];
 
+    // v6.11.0: per-phrase maxPages (read from the config field)
+    const maxPagesInput = document.getElementById('cfg-queue-max-pages');
+    const perPhraseMaxPages = maxPagesInput ? parseInt(maxPagesInput.value, 10) || 0 : 0;
+
     phrases.forEach((phrase) => {
-      // v6.2.0: detect whether this entry is a URL or a plain phrase.
       const isUrl = /^https?:\/\//i.test(phrase);
-      // Dedup key: normalized lowercase (URLs) or as-is (phrases)
       const dedupKey = isUrl ? phrase.toLowerCase().replace(/\/+$/, '') : phrase.toLowerCase();
       if (!queueWork.some((q) => {
         const qKey = /^https?:\/\//i.test(q.phrase) ? q.phrase.toLowerCase().replace(/\/+$/, '') : q.phrase.toLowerCase();
@@ -1490,13 +1570,13 @@
           id: 'q_' + Math.random().toString(36).substr(2, 7),
           phrase,
           isUrl,
-          status: 'waiting'
+          status: 'waiting',
+          maxPages: perPhraseMaxPages   // v6.11.0: per-phrase limit (0 = unlimited)
         });
       }
     });
 
     searchInput.value = '';
-    // v6.3.0: persist the queue so other tabs see it too
     persistQueueWork();
     renderQueueUI();
     if (!isCrawling) processNextInQueue();
@@ -1505,34 +1585,62 @@
   function renderQueueUI() {
     const container = document.getElementById('queue-container');
     if (!container) return;
+    const summaryEl = document.getElementById('queue-summary');
+    if (summaryEl) summaryEl.textContent = queueWork.length + ' items';
+
     if (queueWork.length === 0) {
       container.innerHTML = '<span style="color:#888; font-size:10px;">Sin frases pendientes...</span>';
       return;
     }
     container.innerHTML = '';
-    queueWork.forEach((item) => {
+    queueWork.forEach((item, idx) => {
       const el = document.createElement('div');
       el.className = 'ml-queue-item ' + item.status;
       const statusText = item.status === 'processing' ? 'En proceso...'
         : item.status === 'done' ? 'Completado' : 'En espera';
-      // v6.2.0: URLs get a 🔗 icon and are truncated; phrases show as-is
       const displayText = item.isUrl
-        ? '🔗 ' + escapeHtml(truncateUrl(item.phrase, 50))
+        ? '🔗 ' + escapeHtml(truncateUrl(item.phrase, 45))
         : escapeHtml(item.phrase);
       const st = escapeHtml(statusText);
+      // v6.11.0: show maxPages per phrase + queue position
+      const maxPagesLabel = item.maxPages > 0 ? ` · max ${item.maxPages}p` : ' · ∞';
+      const posLabel = `<span style="font-size:8px; color:#aaa; margin-right:4px;">#${idx + 1}</span>`;
       el.innerHTML = `
-        <span><b>${displayText}</b> <i style="font-size:9px; color:#666;">(${st})</i></span>
-        ${item.status !== 'done' ? '<span style="cursor:pointer; color:#ff5252; font-weight:bold;" class="cancel-q">✕</span>' : ''}
+        <div style="flex:1; overflow:hidden;">
+          <span>${posLabel}<b>${displayText}</b></span>
+          <div style="font-size:9px; color:#666; margin-top:1px;"><i>(${st}${maxPagesLabel})</i></div>
+        </div>
+        <div style="display:flex; gap:2px; flex-shrink:0;">
+          ${idx > 0 && item.status === 'waiting' ? '<span style="cursor:pointer; color:#3483fa; font-size:10px;" class="up-q" title="Subir">▲</span>' : ''}
+          ${idx < queueWork.length - 1 && item.status === 'waiting' ? '<span style="cursor:pointer; color:#3483fa; font-size:10px;" class="down-q" title="Bajar">▼</span>' : ''}
+          ${item.status !== 'done' ? '<span style="cursor:pointer; color:#ff5252; font-weight:bold; font-size:10px;" class="cancel-q" title="Eliminar">✕</span>' : ''}
+        </div>
       `;
-      // Add full-URL tooltip for truncated URLs
-      if (item.isUrl) {
-        el.title = item.phrase;
-      }
+      if (item.isUrl) el.title = item.phrase;
+
+      // v6.11.0: move up/down handlers
+      const upEl = el.querySelector('.up-q');
+      if (upEl) upEl.onclick = () => {
+        const tmp = queueWork[idx - 1];
+        queueWork[idx - 1] = queueWork[idx];
+        queueWork[idx] = tmp;
+        persistQueueWork();
+        renderQueueUI();
+      };
+      const downEl = el.querySelector('.down-q');
+      if (downEl) downEl.onclick = () => {
+        const tmp = queueWork[idx + 1];
+        queueWork[idx + 1] = queueWork[idx];
+        queueWork[idx] = tmp;
+        persistQueueWork();
+        renderQueueUI();
+      };
+
       if (item.status !== 'done') {
         const cancelEl = el.querySelector('.cancel-q');
         if (cancelEl) cancelEl.onclick = () => {
           queueWork = queueWork.filter((q) => q.id !== item.id);
-          persistQueueWork();   // v6.3.0: sync across tabs
+          persistQueueWork();
           renderQueueUI();
         };
       }
@@ -1540,7 +1648,7 @@
       if (item.status === 'done') {
         setTimeout(() => {
           queueWork = queueWork.filter((q) => q.id !== item.id);
-          persistQueueWork();   // v6.3.0: sync across tabs
+          persistQueueWork();
           renderQueueUI();
         }, 2200);
       }
@@ -1555,10 +1663,19 @@
       if (btnStart) { btnStart.disabled = false; btnStart.classList.remove('animating'); }
       const btnPause = document.getElementById('btn-toggle-pause');
       if (btnPause) { btnPause.disabled = true; btnPause.innerHTML = ICONS.pause; }
+      // v6.11.0: disable crawl control buttons
+      ['btn-skip-page', 'btn-skip-phrase', 'btn-stop-crawl'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.disabled = true;
+      });
+      const etaEl = document.getElementById('ml-eta');
+      if (etaEl) etaEl.style.display = 'none';
       const statusEl = document.getElementById('ml-status');
       if (statusEl) statusEl.innerText = 'Estado: Finalizado';
       if (modal) modal.classList.remove('crawling-active');
       playNotificationSound();
+      // v6.11.0: killer features — auto deep extract + auto sync
+      await runPostCrawlAutomation();
       return;
     }
 
@@ -1600,35 +1717,111 @@
     await runCrawler();
 
     nextItem.status = 'done';
-    persistQueueWork();   // v6.3.0: sync status change across tabs
+    persistQueueWork();
     renderQueueUI();
     processNextInQueue();
   }
 
+  /** v6.11.0: Post-crawl automation — auto deep extract + auto sync sheets.
+   *  Runs after ALL phrases in the queue are done.
+   *  Only triggers if the user checked the corresponding checkboxes.
+   */
+  async function runPostCrawlAutomation() {
+    const autoDeepCheckbox = document.getElementById('cfg-auto-deep');
+    const autoSyncCheckbox = document.getElementById('cfg-auto-sync');
+    const autoDeep = autoDeepCheckbox ? autoDeepCheckbox.checked : false;
+    const autoSync = autoSyncCheckbox ? autoSyncCheckbox.checked : false;
+
+    if (!autoDeep && !autoSync) return;
+
+    logActivity('AUTO', `Post-crawl automation starting (deep=${autoDeep}, sync=${autoSync})`, 'info');
+
+    if (autoDeep && products.length > 0) {
+      // Select ALL products and deep extract them
+      logActivity('AUTO', `Auto-selecting all ${products.length} products for deep extraction...`, 'info');
+      const statusEl = document.getElementById('ml-status');
+      if (statusEl) statusEl.innerText = `Estado: Auto-selecting ${products.length} products for deep extraction...`;
+
+      // Add all products to deep queue
+      let added = 0;
+      for (const p of products) {
+        const exists = deepQueue.some((dq) => {
+          if (typeof dq === 'string') return dq === p.Link || dq === extractMlvId(p.Link) || dq === p.id;
+          return dq.id === p.id || dq.Link === p.Link;
+        });
+        if (!exists) {
+          deepQueue.push({ id: p.id, Link: p.Link, Nombre: p.Nombre });
+          added++;
+        }
+      }
+      await persistDeepQueue();
+      renderResults();
+      logActivity('AUTO', `Added ${added} products to deep queue. Starting extraction...`, 'info');
+
+      if (deepQueue.length > 0) {
+        await runAsyncFetchQueue();
+      }
+    }
+
+    if (autoSync && products.length > 0) {
+      logActivity('AUTO', `Auto-syncing to Google Sheets...`, 'info');
+      const statusEl = document.getElementById('ml-status');
+      if (statusEl) statusEl.innerText = 'Estado: Auto-syncing to Google Sheets...';
+      await syncToGoogleSheets();
+    }
+
+    logActivity('AUTO', `Post-crawl automation complete!`, 'info');
+    const statusEl = document.getElementById('ml-status');
+    if (statusEl) statusEl.innerText = '✔ ¡Automatización completada! Todo listo.';
+  }
+
   async function runCrawler() {
     const delay = parseInt(safeValue('cfg-delay', '1200'), 10) || 1500;
-    const maxPages = parseInt(safeValue('cfg-max-pages', '20'), 10);
+    // v6.11.0: use per-phrase maxPages if available, fall back to global config
+    const phraseMaxPages = currentSearchProcess && currentSearchProcess.maxPages !== undefined
+      ? currentSearchProcess.maxPages
+      : parseInt(safeValue('cfg-max-pages', '0'), 10);
     const maxProducts = parseInt(safeValue('cfg-max-products', '0'), 10);
     if (modal) modal.classList.add('crawling-active');
 
+    // v6.11.0: show ETA + progress
+    const etaEl = document.getElementById('ml-eta');
+    if (etaEl && phraseMaxPages > 0) {
+      etaEl.style.display = 'flex';
+      const totalEl = document.getElementById('ml-total-pages');
+      if (totalEl) totalEl.textContent = phraseMaxPages;
+    } else if (etaEl) {
+      etaEl.style.display = 'none';
+    }
+
+    // v6.11.0: enable crawl control buttons
+    const btnSkipPage = document.getElementById('btn-skip-page');
+    const btnSkipPhrase = document.getElementById('btn-skip-phrase');
+    const btnStopCrawl = document.getElementById('btn-stop-crawl');
+    if (btnSkipPage) btnSkipPage.disabled = false;
+    if (btnSkipPhrase) btnSkipPhrase.disabled = false;
+    if (btnStopCrawl) btnStopCrawl.disabled = false;
+
     let safetyCounter = 0;
     let consecutive429 = 0;
+    const crawlStartTime = Date.now();
+
     while (isCrawling && safetyCounter < 5000) {
       safetyCounter++;
+
+      // v6.11.0: per-phrase maxPages limit (0 = unlimited)
+      if (phraseMaxPages > 0 && processedPagesCount >= phraseMaxPages) {
+        setDebugger(`[Límite por frase]: ${processedPagesCount} páginas ≥ máximo ${phraseMaxPages}.`);
+        const statusEl = document.getElementById('ml-status');
+        if (statusEl) statusEl.innerText = `Estado: Frase "${currentSearchProcess.phrase}" completada (${phraseMaxPages} páginas)`;
+        break;
+      }
 
       // Max-products limit (0 = unlimited)
       if (maxProducts > 0 && products.length >= maxProducts) {
         setDebugger(`[Límite alcanzado]: ${products.length} productos ≥ máximo ${maxProducts}. Deteniendo.`);
         const statusEl = document.getElementById('ml-status');
         if (statusEl) statusEl.innerText = `Estado: Límite de ${maxProducts} productos alcanzado`;
-        break;
-      }
-
-      // Max-pages limit (0 = unlimited)
-      if (maxPages > 0 && processedPagesCount >= maxPages) {
-        setDebugger(`[Límite alcanzado]: ${processedPagesCount} páginas ≥ máximo ${maxPages}. Deteniendo.`);
-        const statusEl = document.getElementById('ml-status');
-        if (statusEl) statusEl.innerText = `Estado: Límite de ${maxPages} páginas alcanzado`;
         break;
       }
 
@@ -1650,10 +1843,26 @@
       visitedUrls.add(currentUrl);
       processedPagesCount++;
 
+      // v6.11.0: update status + ETA
       const statusEl = document.getElementById('ml-status');
-      if (statusEl) statusEl.innerText = `Procesando: ${currentSearchProcess.phrase} (Pág. ${processedPagesCount}/${maxPages > 0 ? maxPages : '∞'})`;
+      if (statusEl) statusEl.innerText = `Procesando: ${currentSearchProcess.phrase} (Pág. ${processedPagesCount}/${phraseMaxPages > 0 ? phraseMaxPages : '∞'})`;
+      const curPageEl = document.getElementById('ml-current-page');
+      if (curPageEl) curPageEl.textContent = processedPagesCount;
+      // Progress bar
+      const progressEl = document.getElementById('ml-progress');
+      if (progressEl && phraseMaxPages > 0) {
+        progressEl.style.width = Math.min(100, (processedPagesCount / phraseMaxPages) * 100) + '%';
+      }
+      // ETA calculation
+      const etaSpan = document.querySelector('#ml-eta span');
+      if (etaSpan && phraseMaxPages > 0 && processedPagesCount > 1) {
+        const elapsed = (Date.now() - crawlStartTime) / 1000;
+        const perPage = elapsed / processedPagesCount;
+        const remaining = (phraseMaxPages - processedPagesCount) * perPage;
+        etaSpan.textContent = `⏱ ETA: ${Math.ceil(remaining)}s (${perPage.toFixed(1)}s/pág)`;
+      }
+
       setDebugger(`[Crawling]: ${currentUrl}`);
-      // v6.6.0: log each page fetch attempt
       logActivity('CRAWL_FETCH', `Pág ${processedPagesCount}: GET ${currentUrl}`, 'info');
 
       try {
