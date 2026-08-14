@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.5.1';
+  const EXT_VERSION = '6.6.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -853,26 +853,46 @@
   /* modal so the user can debug issues.                                */
   /* ------------------------------------------------------------------ */
 
-  const errorLog = [];          // {ts, type, message}
-  const MAX_LOG_ENTRIES = 500;
+  const errorLog = [];          // {ts, type, message, level}
+  const MAX_LOG_ENTRIES = 1000;
   const STORAGE_KEY_ERROR_LOG = 'ml_error_log';
 
-  function logError(type, message) {
-    const entry = { ts: new Date().toISOString(), type, message: String(message).substring(0, 500) };
+  // v6.6.0: unified logging — captures EVERYTHING (info, warn, error)
+  // so the user can see exactly what the scraper is doing at each step.
+  // Levels: 'info' (requests, parses, extractions), 'warn' (4xx, redirects),
+  // 'error' (5xx, exceptions, parse failures).
+  function logActivity(type, message, level) {
+    if (!level) level = type.indexOf('HTTP 4') !== -1 || type.indexOf('HTTP 5') !== -1 ? 'warn' : 'info';
+    if (type.toUpperCase().indexOf('EXCEPTION') !== -1 || type.toUpperCase().indexOf('FAIL') !== -1) level = 'error';
+    const entry = { ts: new Date().toISOString(), type, message: String(message).substring(0, 800), level };
     errorLog.push(entry);
     if (errorLog.length > MAX_LOG_ENTRIES) errorLog.shift();
-    console.warn('[ML Scraper][' + type + ']', message);
-    // v6.5.0: persist to chrome.storage so the error-log tab can read it
-    persistErrorLog();
+    const prefix = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
+    prefix.call(console, '[ML Scraper][' + type + ']', message);
+    // Persist (debounced — multiple logs in same tick coalesce)
+    scheduleLogPersist();
     // Update badge count in the modal header (if visible)
     const badge = document.getElementById('ml-error-count');
     if (badge) badge.textContent = errorLog.length;
   }
 
+  // Keep logError as alias for backwards compat (calls logActivity with error level)
+  function logError(type, message) {
+    logActivity(type, message, 'error');
+  }
+
+  let logPersistTimer = null;
+  function scheduleLogPersist() {
+    if (logPersistTimer) return;
+    logPersistTimer = setTimeout(() => {
+      logPersistTimer = null;
+      try { chrome.storage.local.set({ [STORAGE_KEY_ERROR_LOG]: errorLog }); } catch (e) {}
+    }, 300);
+  }
+
   function persistErrorLog() {
-    try {
-      chrome.storage.local.set({ [STORAGE_KEY_ERROR_LOG]: errorLog });
-    } catch (e) { /* ignore */ }
+    if (logPersistTimer) { clearTimeout(logPersistTimer); logPersistTimer = null; }
+    try { chrome.storage.local.set({ [STORAGE_KEY_ERROR_LOG]: errorLog }); } catch (e) {}
   }
 
   async function loadErrorLog() {
@@ -885,6 +905,13 @@
       }
     } catch (e) { /* ignore */ }
   }
+
+  // v6.6.0: visits API consecutive 4xx counter.
+  // If the ML visits API returns HTTP 4xx 3+ times in a row, we stop calling
+  // it for the rest of the session (the token is probably invalid/expired).
+  let visitsConsecutive4xx = 0;
+  let visitsDisabled = false;
+  const VISITS_4XX_THRESHOLD = 3;
 
   /* ------------------------------------------------------------------ */
   /* Search-results page parser                                       */
@@ -910,11 +937,21 @@
 
     let countOnPage = 0;
     let garbageFiltered = 0;
+    let filteredByScore = 0;
+    let filteredBySales = 0;
+    let filteredByShipping = 0;
     const incoming = [];
+
+    // v6.6.0: log page parse start with diagnostic info
+    const pageTitle = (doc.title || '').substring(0, 80);
+    const htmlLength = html ? html.length : 0;
+    logActivity('PARSE_PAGE', `Parsing page: ${items.length} items found, HTML=${htmlLength} chars, title="${pageTitle}"`, 'info');
 
     if (items.length === 0) {
       // v6.4.0: log when selectors find nothing — helps debug ML DOM changes
-      logError('PARSE_PAGE', '0 items found on page. Selectors may be outdated or page is anti-bot/login redirect. URL: ' + (doc.title || '').substring(0, 80));
+      // v6.6.0: also save first 300 chars of HTML to diagnose anti-bot/login redirects
+      const htmlPreview = (html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 200);
+      logError('PARSE_PAGE', `0 items found. Possible anti-bot/login redirect.\n  Title: "${pageTitle}"\n  HTML preview: ${htmlPreview}`);
     }
 
     items.forEach((item) => {
@@ -998,8 +1035,15 @@
 
       if (isGarbage) {
         garbageFiltered++;
+        // v6.6.0: log each garbage item for debugging
+        logActivity('PARSE_FILTER', `Garbage filtered #${countOnPage}: name="${name.substring(0,40)}" price=${parsedPrice.num}`, 'warn');
         return;
       }
+
+      // v6.6.0: track filter reasons
+      if (score < minScore) filteredByScore++;
+      if (salesCount < minSales) filteredBySales++;
+      if (requireFreeShipping && !isFreeShipping) filteredByShipping++;
 
       if (score >= minScore && salesCount >= minSales && (!requireFreeShipping || isFreeShipping)) {
         const mlvId = extractMlvId(permalink);
@@ -1028,11 +1072,20 @@
       }
     });
 
+    // v6.6.0: log parse summary
+    const passedFilters = countOnPage - garbageFiltered - filteredByScore - filteredBySales - filteredByShipping;
+    logActivity('PARSE_SUMMARY',
+      `Page done: ${countOnPage} total, ${incoming.length} added, ${garbageFiltered} garbage, ` +
+      `${filteredByScore} low-score(<${minScore}), ${filteredBySales} low-sales(<${minSales}), ` +
+      `${filteredByShipping} no-free-shipping`,
+      'info');
+
     if (incoming.length) {
       const merged = mergeIntoLocal(incoming);
       persistProducts();
       if (merged > 0) {
         setDebugger(`[Página analizada]: ${countOnPage} items, ${merged} nuevos, ${garbageFiltered} filtrados (basura).`);
+        logActivity('MERGE', `Merged ${incoming.length} products, ${merged} new added to storage (total now ${products.length})`, 'info');
       }
     } else if (countOnPage > 0 && garbageFiltered > 0) {
       setDebugger(`[Página analizada]: ${countOnPage} items, TODOS filtrados como basura (${garbageFiltered}). Revisa el log de errores.`);
@@ -1489,9 +1542,13 @@
       const statusEl = document.getElementById('ml-status');
       if (statusEl) statusEl.innerText = `Procesando: ${currentSearchProcess.phrase} (Pág. ${processedPagesCount}/${maxPages > 0 ? maxPages : '∞'})`;
       setDebugger(`[Crawling]: ${currentUrl}`);
+      // v6.6.0: log each page fetch attempt
+      logActivity('CRAWL_FETCH', `Pág ${processedPagesCount}: GET ${currentUrl}`, 'info');
 
       try {
         const response = await fetch(currentUrl, { credentials: 'include' });
+        // v6.6.0: log response status
+        logActivity('CRAWL_RESPONSE', `Pág ${processedPagesCount}: HTTP ${response.status} ${response.statusText || ''} (redirected=${response.redirected})`, response.ok ? 'info' : 'warn');
 
         // HTTP 429 = rate limited — back off and retry
         if (response.status === 429) {
@@ -1728,6 +1785,10 @@
     const googleBreakoutUrl = `https://www.google.com/search?q=${googleQuery}`;
 
     const mlvId = extractMlvId(targetUrl);
+    // v6.6.0: log extraction details for debugging
+    logActivity('ARTICLE_PARSE',
+      `${mlvId || '?'}: title="${title.substring(0, 40)}" price=${parsedPrice.num} score=${scoreVal} reviews=${reviewCount} sales=${salesCount} seller="${sellerName.substring(0, 25)}" brand=${brand} model=${model} specs=${specList.length}`,
+      'info');
     return {
       id: mlvId || ('art_' + Math.random().toString(36).substr(2, 9)),
       Nombre: title,
@@ -1766,64 +1827,112 @@
     if (modal) modal.classList.add('crawling-active');
     const delay = parseInt(safeValue('cfg-delay', '1200'), 10) || 1200;
 
+    // v6.6.0: reset visits 4xx counter at the start of each deep-extraction run
+    // (but keep visitsDisabled flag if it was set in a previous run this session)
+    visitsConsecutive4xx = 0;
+
+    logActivity('DEEP_START', `Deep extraction started: ${deepQueue.length} products in queue, visits=${visitsDisabled ? 'DISABLED' : 'enabled'}`, 'info');
+
+    let processed = 0;
+    let successCount = 0;
+    let failCount = 0;
+
     while (deepQueue.length > 0 && isDeepCrawling) {
       const current = deepQueue[0];
       const rawLink = typeof current === 'string' ? current : current.Link;
       const mlvId = extractMlvId(rawLink) || rawLink;
-      // Prefer the stored permalink when available, fall back to the canonical ML redirect URL.
+      // v6.5.1: use cleanPermalink so the fetch URL doesn't have tracking junk
       const fetchTargetUrl = rawLink && /^https?:\/\//i.test(rawLink)
-        ? rawLink
+        ? cleanPermalink(rawLink)
         : `https://articulo.mercadolibre.com.ve/${mlvId}`;
+      processed++;
 
       const statusEl = document.getElementById('ml-status');
-      if (statusEl) statusEl.innerText = `Background Fetch: ${mlvId}... (${deepQueue.length} restantes)`;
-      setDebugger(`[Deep fetch]: ${fetchTargetUrl}`);
+      if (statusEl) statusEl.innerText = `Background Fetch: ${mlvId}... (${deepQueue.length} restantes, ${successCount} ok, ${failCount} fail)`;
+      setDebugger(`[Deep fetch ${processed}/${deepQueue.length + processed - 1}]: ${fetchTargetUrl}`);
+      // v6.6.0: log each deep fetch attempt
+      logActivity('DEEP_FETCH', `[${processed}] Fetching ${mlvId}: ${fetchTargetUrl}`, 'info');
 
       try {
         const response = await sendMessage({ action: 'FETCH_ARTICLE', url: fetchTargetUrl });
-        if (response && response.success && response.html) {
+        // v6.6.0: log fetch response
+        if (!response || !response.success) {
+          const errMsg = response && response.error ? response.error : 'sin respuesta del background SW';
+          logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: FETCH FAILED — ${errMsg}`, 'error');
+          setDebugger('[Deep fetch error]: ' + errMsg);
+          failCount++;
+        } else if (!response.html || response.html.length < 1000) {
+          // v6.6.0: suspiciously short HTML — likely anti-bot or error page
+          const htmlPreview = (response.html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 200);
+          logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: HTML too short (${response.html ? response.html.length : 0} chars). Anti-bot/error page?\n  Preview: ${htmlPreview}`, 'error');
+          setDebugger(`[Deep fetch]: ${mlvId} HTML sospechosamente corto (${response.html ? response.html.length : 0} chars)`);
+          failCount++;
+        } else {
+          logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: FETCH OK, HTML=${response.html.length} chars, parsing...`, 'info');
           const parser = new DOMParser();
           const doc = parser.parseFromString(response.html, 'text/html');
           const extracted = parseArticleDocument(doc, response.finalUrl || fetchTargetUrl);
 
+          // v6.6.0: log what was extracted
+          logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: parsed — title="${(extracted.Nombre || '').substring(0, 40)}", price=${extracted.Precio_Numerico}, score=${extracted.Score}, seller="${(extracted.Vendedor_Nombre || '').substring(0, 25)}", reviews=${extracted.Opiniones || 0}`, 'info');
+
+          // v6.6.0: detect if extraction actually got real data
+          if (!extracted.Nombre || extracted.Nombre === 'N/A' || extracted.Precio_Numerico === 0) {
+            logActivity('DEEP_PARSE', `[${processed}] ${mlvId}: extraction yielded empty/garbage data. Selectors may be outdated.`, 'warn');
+          }
+
           const existingIdx = products.findIndex((p) => extractMlvId(p.Link) === mlvId || p.id === mlvId);
           if (existingIdx >= 0) {
             products[existingIdx] = { ...products[existingIdx], ...extracted, id: products[existingIdx].id };
+            logActivity('DEEP_MERGE', `[${processed}] ${mlvId}: merged into existing product`, 'info');
           } else {
             products.push(extracted);
+            logActivity('DEEP_MERGE', `[${processed}] ${mlvId}: added as new product`, 'info');
           }
           await persistProducts();
+          successCount++;
 
-          // v6.3.0: fetch real visit count from the ML API for this article.
-          // This is a separate network call to api.mercadolibre.com (proxied
-          // through the background SW to bypass CORS). The visit count is
-          // stored on the product as `Visitas` and used in A1 scoring.
-          try {
-            const visitResponse = await sendMessage({ action: 'FETCH_VISITS', itemId: mlvId });
-            if (visitResponse && visitResponse.success) {
-              const idx = products.findIndex((p) => extractMlvId(p.Link) === mlvId || p.id === mlvId);
-              if (idx >= 0) {
-                products[idx].Visitas = visitResponse.visits || 0;
-                await persistProducts();
+          // v6.6.0: fetch real visit count — but skip if disabled after 3 consecutive 4xx
+          if (visitsDisabled) {
+            // Already disabled this session — skip silently
+          } else {
+            try {
+              const visitResponse = await sendMessage({ action: 'FETCH_VISITS', itemId: mlvId });
+              if (visitResponse && visitResponse.success) {
+                visitsConsecutive4xx = 0;  // reset on success
+                const idx = products.findIndex((p) => extractMlvId(p.Link) === mlvId || p.id === mlvId);
+                if (idx >= 0) {
+                  products[idx].Visitas = visitResponse.visits || 0;
+                  await persistProducts();
+                }
+                logActivity('VISIT_API', `[${processed}] ${mlvId}: ${visitResponse.visits || 0} visitas en 10 días`, 'info');
+                setDebugger(`[Visitas ${mlvId}]: ${visitResponse.visits || 0} visitas en 10 días`);
+              } else if (visitResponse && visitResponse.error) {
+                // v6.6.0: check for 4xx and increment consecutive counter
+                const is4xx = visitResponse.error.indexOf('HTTP 4') !== -1;
+                if (is4xx) {
+                  visitsConsecutive4xx++;
+                  logActivity('VISIT_API', `[${processed}] ${mlvId}: ${visitResponse.error} (consecutive 4xx: ${visitsConsecutive4xx}/${VISITS_4XX_THRESHOLD})`, 'warn');
+                  if (visitsConsecutive4xx >= VISITS_4XX_THRESHOLD) {
+                    visitsDisabled = true;
+                    logActivity('VISIT_API', `Visits API DISABLED after ${visitsConsecutive4xx} consecutive 4xx errors. Skipping visits for the rest of this session. Check your access token.`, 'error');
+                  }
+                } else {
+                  logActivity('VISIT_API', `[${processed}] ${mlvId}: ${visitResponse.error}${visitResponse.body ? ' — ' + visitResponse.body.substring(0, 100) : ''}`, 'warn');
+                }
+                setDebugger(`[Visitas ${mlvId} error]: ${visitResponse.error}`);
               }
-              setDebugger(`[Visitas ${mlvId}]: ${visitResponse.visits || 0} visitas en 10 días`);
-            } else if (visitResponse && visitResponse.error) {
-              setDebugger(`[Visitas ${mlvId} error]: ${visitResponse.error}`);
-              logError('VISIT_API', `Visitas ${mlvId}: ${visitResponse.error}${visitResponse.body ? ' — ' + visitResponse.body.substring(0, 100) : ''}`);
+            } catch (visitErr) {
+              logActivity('VISIT_API', `[${processed}] ${mlvId}: exception — ${visitErr.message}`, 'error');
+              setDebugger(`[Visitas ${mlvId} exception]: ${visitErr.message}`);
             }
-          } catch (visitErr) {
-            setDebugger(`[Visitas ${mlvId} exception]: ${visitErr.message}`);
-            logError('VISIT_EXC', `Visitas ${mlvId}: ${visitErr.message}`);
           }
-        } else {
-          const errMsg = response && response.error ? response.error : 'sin respuesta del background SW';
-          setDebugger('[Deep fetch error]: ' + errMsg);
-          logError('DEEP_FETCH', `Artículo ${mlvId}: ${errMsg}`);
         }
       } catch (err) {
         const errMsg = err && err.message ? err.message : String(err);
+        logActivity('DEEP_FETCH', `[${processed}] ${mlvId}: EXCEPTION — ${errMsg}`, 'error');
         setDebugger('[Deep fetch exception]: ' + errMsg);
-        logError('DEEP_FETCH_EXC', `Artículo ${mlvId}: ${errMsg}`);
+        failCount++;
       }
 
       deepQueue.shift();
@@ -1831,6 +1940,8 @@
       renderResults();
       await new Promise((r) => setTimeout(r, delay));
     }
+
+    logActivity('DEEP_DONE', `Deep extraction finished: ${processed} processed, ${successCount} success, ${failCount} fail, visits=${visitsDisabled ? 'DISABLED' : 'enabled'}`, 'info');
 
     isDeepCrawling = false;
     if (modal) modal.classList.remove('crawling-active');

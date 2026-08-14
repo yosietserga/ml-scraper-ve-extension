@@ -55,8 +55,14 @@
     const container = $('log-container');
     const filterText = ($('filter-text').value || '').toLowerCase();
     const filterType = $('filter-type').value;
+    const showInfo = $('show-info').checked;
 
     let entries = allEntries.slice().reverse(); // newest first
+
+    // v6.6.0: filter by info/warn/error level
+    if (!showInfo) {
+      entries = entries.filter((e) => (e.level || 'info') !== 'info');
+    }
 
     if (filterText) {
       entries = entries.filter((e) =>
@@ -68,12 +74,16 @@
     if (filterType) {
       entries = entries.filter((e) => {
         const cls = classifyType(e.type);
-        if (filterType === 'HTTP') return cls === 'http-4xx' || cls === 'http-5xx';
-        if (filterType === 'PARSE') return cls === 'parse';
+        const level = e.level || 'info';
+        if (filterType === 'INFO') return level === 'info';
+        if (filterType === 'WARN') return level === 'warn';
+        if (filterType === 'ERROR') return level === 'error';
+        if (filterType === 'CRAWL') return e.type && e.type.toUpperCase().indexOf('CRAWL') !== -1;
+        if (filterType === 'DEEP') return e.type && e.type.toUpperCase().indexOf('DEEP') !== -1;
+        if (filterType === 'PARSE') return cls === 'parse' || (e.type && e.type.toUpperCase().indexOf('PARSE') !== -1);
         if (filterType === 'VISIT') return cls === 'visit';
-        if (filterType === 'DEEP') return cls === 'deep';
-        if (filterType === 'CSV') return cls === 'csv';
-        if (filterType === 'REDIRECT') return cls === 'redirect';
+        if (filterType === 'HTTP') return cls === 'http-4xx' || cls === 'http-5xx';
+        if (filterType === 'MERGE') return e.type && e.type.toUpperCase().indexOf('MERGE') !== -1;
         return true;
       });
     }
@@ -108,12 +118,13 @@
 
     container.innerHTML = entries.map((e) => {
       const cls = classifyType(e.type);
+      const level = e.level || 'info';
       const ts = formatTs(e.ts);
       const type = escapeHtml(e.type || 'UNKNOWN');
       const msg = escapeHtml(e.message || '');
-      return `<div class="log-entry ${cls}">
+      return `<div class="log-entry ${cls} level-${level}">
         <span class="log-ts">${escapeHtml(ts)}</span>
-        <span class="log-type ${cls}">[${type}]</span>
+        <span class="log-type ${cls} level-${level}">[${type}]</span>
         ${msg}
       </div>`;
     }).join('');
@@ -160,6 +171,7 @@
     $('btn-export').addEventListener('click', exportTxt);
     $('filter-text').addEventListener('input', render);
     $('filter-type').addEventListener('change', render);
+    $('show-info').addEventListener('change', render);  // v6.6.0
     loadLog();
   });
 })();

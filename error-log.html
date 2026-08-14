@@ -106,6 +106,14 @@
       font-size: 11px;
       margin-left: 6px;
     }
+
+    /* v6.6.0: level-based coloring */
+    .log-entry.level-info { opacity: 0.85; }
+    .log-entry.level-warn { background: #2d1f0e; border-left-color: #ff9800; }
+    .log-entry.level-error { background: #2d0e0e; border-left-color: #ff5252; }
+    .log-type.level-info { color: #4fc3f7; }
+    .log-type.level-warn { color: #ffb74d; }
+    .log-type.level-error { color: #ef5350; }
   </style>
 </head>
 <body>
@@ -127,13 +135,19 @@
     <label>Tipo:</label>
     <select id="filter-type">
       <option value="">Todos</option>
-      <option value="HTTP">HTTP 4xx/5xx</option>
-      <option value="PARSE">Parse errors</option>
+      <option value="INFO">ℹ Info (todas las actividades)</option>
+      <option value="WARN">⚠ Warnings</option>
+      <option value="ERROR">✖ Errores</option>
+      <option value="CRAWL">Crawl (páginas)</option>
+      <option value="DEEP">Deep extraction</option>
+      <option value="PARSE">Parse</option>
       <option value="VISIT">Visit API</option>
-      <option value="DEEP">Deep fetch</option>
-      <option value="CSV">CSV export</option>
-      <option value="REDIRECT">Redirects</option>
+      <option value="HTTP">HTTP 4xx/5xx</option>
+      <option value="MERGE">Merges</option>
     </select>
+    <label style="margin-left:auto;">
+      <input type="checkbox" id="show-info" checked> Mostrar info
+    </label>
   </div>
 
   <div id="log-container">
