@@ -77,6 +77,38 @@
     chrome.tabs.create({ url: chrome.runtime.getURL('analysis.html') });
   });
 
+  // v6.9.0: sync to Google Sheets from popup
+  $('btn-sync-sheets').addEventListener('click', async () => {
+    const r = await sendMessage({ action: 'EXPORT_CSV' });
+    if (!r || !r.success || !r.products || r.products.length === 0) {
+      toast('No hay productos para sincronizar');
+      return;
+    }
+    const data = await chrome.storage.local.get('ml_gsheets_url');
+    const url = data.ml_gsheets_url;
+    if (!url) {
+      toast('Pega la Sheets URL en Filtros & Config');
+      return;
+    }
+    toast('Sincronizando...');
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        mode: 'cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'sync', products: r.products })
+      });
+      const result = await response.json();
+      if (result.success) {
+        toast(`✅ ${result.appended} nuevos, ${result.updated} actualizados`);
+      } else {
+        toast('❌ ' + (result.error || 'Error'));
+      }
+    } catch (err) {
+      toast('❌ ' + err.message);
+    }
+  });
+
   $('btn-show').addEventListener('click', async () => {
     const ok = await sendToActiveTab('SHOW_PANEL');
     if (ok) {
@@ -118,8 +150,8 @@
     const headers = [
       'Nombre', 'Precio_Numerico', 'Score', 'Opiniones', 'Ventas_Estimadas',
       'Visitas_10dias',
-      'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Vendedor_Seguidores', 'Vendedor_Productos', 'Vendedor_Ventas', 'Vendedor_Recomendacion', 'Vendedor_AniosML',
-      'Ubicacion_Tienda', 'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
+      'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Vendedor_Seguidores', 'Vendedor_Productos', 'Vendedor_Ventas', 'Vendedor_Recomendacion', 'Vendedor_AniosML', 'Vendedor_Link',
+      'Ubicacion_Tienda', 'Categoria', 'Subcategorias', 'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
     ];
     const cell = (v) => '"' + (v === null || v === undefined ? '' : String(v)).replace(/"/g, '""') + '"';
     const rows = validProducts.map((p) => [
@@ -129,9 +161,10 @@
       cell(p.Vendedor_Estatus || 'N/A'),
       cell(p.Vendedor_Seguidores || 'N/A'), cell(p.Vendedor_Productos || 'N/A'),
       cell(p.Vendedor_Ventas || 'N/A'), cell(p.Vendedor_Recomendacion || 'N/A'),
-      cell(p.Vendedor_AniosML || 'N/A'),
+      cell(p.Vendedor_AniosML || 'N/A'), cell(p.Vendedor_Link || ''),
       cell(p.Ubicacion || 'N/A'),
-      cell(p.Categorias || 'N/A'), cell(p.Marca || 'N/A'), cell(p.Modelo || 'N/A'),
+      cell(p.Categoria || 'N/A'), cell(p.Subcategorias || 'N/A'), cell(p.Categorias || 'N/A'),
+      cell(p.Marca || 'N/A'), cell(p.Modelo || 'N/A'),
       cell(p.Especificaciones || 'N/A'), cell(p.Imagen || ''), cell(p.Link || ''),
       cell(p.Google_Breakout_Vendedor || '')
     ].join(','));

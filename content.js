@@ -31,11 +31,12 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.8.1';
+  const EXT_VERSION = '6.9.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
   const STORAGE_KEY_ACCESS_TOKEN = 'ml_access_token';    // v6.3.0: ML API token for visits
+  const STORAGE_KEY_GSHEETS_URL = 'ml_gsheets_url';      // v6.9.0: Google Sheets web app URL
   const STORAGE_KEY_PANEL = 'ml_panel_visible';
 
   /* ------------------------------------------------------------------ */
@@ -476,9 +477,17 @@
             </div>
             <div style="font-size:9px; color:#888; margin-top:3px;">Pega tu token de ML para obtener visitas reales. Sin token, la API pública funciona pero con límites más bajos.</div>
           </div>
+          <div class="ml-input-group">
+            <label>Google Sheets Web App URL (para sync automático):</label>
+            <input type="text" id="cfg-gsheets-url" placeholder="https://script.google.com/macros/s/AKfyc.../exec" style="font-size:10px;">
+            <div style="font-size:9px; color:#888; margin-top:3px;">Despliega el Apps Script (ver google-apps-script.js) y pega aquí la URL. Permite sync con deduplicación por MLV id.</div>
+          </div>
           <div class="ml-btn-group" style="margin-top: 8px;">
             <button class="ml-btn ml-btn-purple" id="btn-open-analysis" style="flex:1;">📊 Abrir Análisis Estratégico</button>
             <button class="ml-btn ml-btn-secondary" id="btn-open-error-log" style="flex:1;" title="Abrir log de errores en pestaña nueva">📋 Log de Errores</button>
+          </div>
+          <div class="ml-btn-group" style="margin-top: 4px;">
+            <button class="ml-btn ml-btn-success" id="btn-sync-sheets" style="flex:1;">📤 Sync to Google Sheets</button>
           </div>
           <hr style="border:0; border-top:1px solid #eee; margin:10px 0;">
           <div style="font-size: 11px; font-weight: bold; margin-bottom: 6px; color: #2d3277;">Información Extraída del Vendedor</div>
@@ -712,6 +721,79 @@
           alert('No se pudo abrir el log de errores: ' + e.message);
         }
       };
+    }
+
+    // v6.9.0: Google Sheets URL input — save on change
+    const gsheetsInput = document.getElementById('cfg-gsheets-url');
+    if (gsheetsInput) {
+      // Load saved value
+      chrome.storage.local.get(STORAGE_KEY_GSHEETS_URL, (data) => {
+        if (data[STORAGE_KEY_GSHEETS_URL]) gsheetsInput.value = data[STORAGE_KEY_GSHEETS_URL];
+      });
+      let gsheetsSaveTimer = null;
+      const saveGSheetsUrl = () => {
+        chrome.storage.local.set({ [STORAGE_KEY_GSHEETS_URL]: gsheetsInput.value || '' });
+      };
+      gsheetsInput.addEventListener('input', () => {
+        if (gsheetsSaveTimer) clearTimeout(gsheetsSaveTimer);
+        gsheetsSaveTimer = setTimeout(saveGSheetsUrl, 800);
+      });
+      gsheetsInput.addEventListener('blur', saveGSheetsUrl);
+    }
+
+    // v6.9.0: sync to Google Sheets
+    const btnSyncSheets = document.getElementById('btn-sync-sheets');
+    if (btnSyncSheets) {
+      btnSyncSheets.onclick = () => syncToGoogleSheets();
+    }
+  }
+
+  /** v6.9.0: Sync all products to Google Sheets via the Apps Script web app.
+   *  Reads the web app URL from storage, POSTs all products, the script
+   *  handles deduplication by MLV id.
+   */
+  async function syncToGoogleSheets() {
+    const data = await chrome.storage.local.get(STORAGE_KEY_GSHEETS_URL);
+    const url = data[STORAGE_KEY_GSHEETS_URL];
+    if (!url) {
+      alert('Pega primero la Google Sheets Web App URL en el campo de configuración.\n\nInstrucciones:\n1. Abre tu Google Sheet\n2. Extensiones → Apps Script\n3. Pega el código de google-apps-script.js\n4. Implementar → Nueva implementación → Aplicación web\n5. Copia la URL y pégala aquí');
+      return;
+    }
+
+    if (products.length === 0) {
+      alert('No hay productos para sincronizar.');
+      return;
+    }
+
+    const btn = document.getElementById('btn-sync-sheets');
+    if (btn) { btn.disabled = true; btn.innerText = '📤 Sincronizando...'; }
+
+    logActivity('SHEETS_SYNC', `Syncing ${products.length} products to Google Sheets...`, 'info');
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        mode: 'cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'sync', products: products })
+      });
+
+      if (!response.ok) {
+        throw new Error('HTTP ' + response.status + ' ' + response.statusText);
+      }
+
+      const result = await response.json();
+      if (result.success) {
+        logActivity('SHEETS_SYNC', `Sync OK: ${result.appended} new, ${result.updated} updated, ${result.skipped} skipped (of ${result.total})`, 'info');
+        alert(`✅ Sync completado!\n\nNuevos: ${result.appended}\nActualizados: ${result.updated}\nOmitidos: ${result.skipped}\nTotal: ${result.total}`);
+      } else {
+        throw new Error(result.error || 'Unknown error');
+      }
+    } catch (err) {
+      logActivity('SHEETS_SYNC', `Sync FAILED: ${err.message}`, 'error');
+      alert('❌ Error al sincronizar con Google Sheets:\n' + err.message + '\n\nVerifica que la URL del Apps Script sea correcta y esté desplegada como "Cualquiera" (acceso público).');
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerText = '📤 Sync to Google Sheets'; }
     }
   }
 
@@ -1599,6 +1681,54 @@
     }
   }
 
+  /** v6.9.0: Parse ML Spanish-format numbers to actual integers.
+   *  Handles: "+4.600 Seguidores" → "4600", "+4,6 mil" → "4600",
+   *           "+10 mil" → "10000", "+1.100" → "1100", "+500" → "500",
+   *           "100%" → "100", "21 años" → "21"
+   *  Returns a string for CSV compatibility.
+   */
+  function parseMLNumber(text) {
+    if (!text) return 'N/A';
+    const s = String(text).trim();
+    // Look for "mil" (thousand) suffix: "+4,6 mil", "+10 mil", "+4.6 mil"
+    const milMatch = s.match(/\+?\s*([0-9.,]+)\s*mil/i);
+    if (milMatch) {
+      let numStr = milMatch[1];
+      // Comma as decimal separator (4,6) → convert to 4.6
+      if (numStr.indexOf(',') !== -1) {
+        numStr = numStr.replace(/\./g, '').replace(',', '.');
+      } else if (numStr.indexOf('.') !== -1) {
+        // Dot: check if thousands (4.600 → 3 digits after dot) or decimal (4.6)
+        const parts = numStr.split('.');
+        if (parts[1] && parts[1].length === 3) {
+          numStr = numStr.replace(/\./g, '');  // thousands separator
+        }
+      }
+      const num = parseFloat(numStr);
+      return isNaN(num) ? s : String(Math.round(num * 1000));
+    }
+    // No "mil" — extract plain number with possible thousands separator
+    const numMatch = s.match(/\+?\s*([0-9.,]+)/);
+    if (numMatch) {
+      let numStr = numMatch[1];
+      // Dot as thousands separator: 4.600 → 4600, 1.100 → 1100
+      if (numStr.indexOf('.') !== -1 && numStr.indexOf(',') === -1) {
+        const parts = numStr.split('.');
+        if (parts[1] && parts[1].length === 3) {
+          numStr = numStr.replace(/\./g, '');
+        }
+      }
+      return numStr;
+    }
+    // Percentage: "100%" → "100"
+    const pctMatch = s.match(/(\d+)%/);
+    if (pctMatch) return pctMatch[1];
+    // Years: "21 años" → "21"
+    const yearMatch = s.match(/(\d+)\s*a/);
+    if (yearMatch) return yearMatch[1];
+    return s.replace(/[^\d.,]/g, '');
+  }
+
   /* ------------------------------------------------------------------ */
   /* Article parser (deep extraction)                                 */
   /* ------------------------------------------------------------------ */
@@ -1705,28 +1835,27 @@
     const sellerName = sellerEl ? (sellerEl.innerText || sellerEl.textContent || '').trim() : 'No especificado';
 
     // v6.5.0: extract seller followers, products, sales from #seller_data block
+    // v6.9.0: use parseMLNumber to convert "+4.600" → "4600", "+4,6 mil" → "4600"
     let sellerFollowers = 'N/A';
     let sellerProducts = 'N/A';
     let sellerSales = 'N/A';
     let sellerRecommendPct = 'N/A';
     let sellerYearsML = 'N/A';
+    let sellerPageLink = '';   // v6.9.0: link to seller's ML store page
 
     const followersEl = queryFirst(doc, ['.ui-seller-data-header__followers', '.ui-seller-data-header__followers span span']);
     if (followersEl) {
       const fText = (followersEl.innerText || followersEl.textContent || '').trim();
-      const m = fText.match(/\+?([0-9.,]+(?:\s*mil)?)/i);
-      if (m) sellerFollowers = m[1];
+      sellerFollowers = parseMLNumber(fText);
     }
 
     const sellerProductsEl = queryFirst(doc, ['.ui-seller-data-header__products', '.ui-seller-data-header__products span span']);
     if (sellerProductsEl) {
       const pText = (sellerProductsEl.innerText || sellerProductsEl.textContent || '').trim();
-      const m = pText.match(/\+?([0-9.,]+k?mil?)/i);
-      if (m) sellerProducts = m[1];
+      sellerProducts = parseMLNumber(pText);
     }
 
     // Seller sales/recommendation/years: these are in .ui-seller-data-status__info blocks
-    // Each block has .info-title (value) + .info-subtitle (label: "Ventas" / "De compradores..." / "En Mercado Libre")
     const sellerInfoBlocks = doc.querySelectorAll('.ui-seller-data-status__info');
     sellerInfoBlocks.forEach((block) => {
       const titleEl = block.querySelector('.ui-seller-data-status__info-title');
@@ -1734,10 +1863,20 @@
       if (!titleEl || !subtitleInfoEl) return;
       const val = (titleEl.innerText || titleEl.textContent || '').trim();
       const label = (subtitleInfoEl.innerText || subtitleInfoEl.textContent || '').trim().toLowerCase();
-      if (label.indexOf('ventas') !== -1) sellerSales = val;
-      else if (label.indexOf('recomiendan') !== -1) sellerRecommendPct = val;
-      else if (label.indexOf('mercado libre') !== -1) sellerYearsML = val;
+      if (label.indexOf('ventas') !== -1) sellerSales = parseMLNumber(val);
+      else if (label.indexOf('recomiendan') !== -1) sellerRecommendPct = parseMLNumber(val);
+      else if (label.indexOf('mercado libre') !== -1) sellerYearsML = val.replace(/[^\d]/g, '');
     });
+
+    // v6.9.0: extract seller page link from footer button
+    const sellerFooterLinkEl = queryFirst(doc, [
+      '.ui-seller-data-footer__container a',
+      '.ui-seller-data-footer a[href]',
+      'a[href*="/pagina/"]'
+    ]);
+    if (sellerFooterLinkEl) {
+      sellerPageLink = cleanPermalink(sellerFooterLinkEl.href || sellerFooterLinkEl.getAttribute('href') || '');
+    }
 
     // 8. Seller status + breadcrumbs
     const statusEl = queryFirst(doc, [
@@ -1801,12 +1940,15 @@
       Ubicacion: locationText,
       Vendedor_Nombre: sellerName,
       Vendedor_Estatus: statusEl ? (statusEl.innerText || statusEl.textContent || '').trim() : 'N/A',
-      Vendedor_Seguidores: sellerFollowers,    // v6.5.0
-      Vendedor_Productos: sellerProducts,      // v6.5.0
-      Vendedor_Ventas: sellerSales,            // v6.5.0
-      Vendedor_Recomendacion: sellerRecommendPct,  // v6.5.0
-      Vendedor_AniosML: sellerYearsML,         // v6.5.0
+      Vendedor_Seguidores: sellerFollowers,    // v6.9.0: parsed number (4600 not 4.6)
+      Vendedor_Productos: sellerProducts,      // v6.9.0: parsed number
+      Vendedor_Ventas: sellerSales,            // v6.9.0: parsed number
+      Vendedor_Recomendacion: sellerRecommendPct,  // v6.9.0: parsed number
+      Vendedor_AniosML: sellerYearsML,         // v6.9.0: just the number (21)
+      Vendedor_Link: sellerPageLink,           // v6.9.0: link to seller's ML store page
       Categorias: Array.from(breadcrumbs).map((b) => (b.innerText || b.textContent || '').trim()).join(' > '),
+      Categoria: Array.from(breadcrumbs).length > 0 ? (Array.from(breadcrumbs)[0].innerText || Array.from(breadcrumbs)[0].textContent || '').trim() : 'N/A',  // v6.9.0: level 0
+      Subcategorias: Array.from(breadcrumbs).length > 1 ? Array.from(breadcrumbs).slice(1).map((b) => (b.innerText || b.textContent || '').trim()).join(' > ') : 'N/A',  // v6.9.0: rest
       Marca: brand,
       Modelo: model,
       Especificaciones: specList.join(' | '),
@@ -2116,8 +2258,8 @@
     const headers = [
       'Nombre', 'Precio_Numerico', 'Score', 'Opiniones', 'Ventas_Estimadas',
       'Visitas_10dias',
-      'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Vendedor_Seguidores', 'Vendedor_Productos', 'Vendedor_Ventas', 'Vendedor_Recomendacion', 'Vendedor_AniosML',
-      'Ubicacion_Tienda', 'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
+      'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Vendedor_Seguidores', 'Vendedor_Productos', 'Vendedor_Ventas', 'Vendedor_Recomendacion', 'Vendedor_AniosML', 'Vendedor_Link',
+      'Ubicacion_Tienda', 'Categoria', 'Subcategorias', 'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
     ];
 
     const rows = validProducts.map((p) => [
@@ -2135,7 +2277,10 @@
       csvCell(p.Vendedor_Ventas || 'N/A'),
       csvCell(p.Vendedor_Recomendacion || 'N/A'),
       csvCell(p.Vendedor_AniosML || 'N/A'),
+      csvCell(p.Vendedor_Link || ''),
       csvCell(p.Ubicacion || 'N/A'),
+      csvCell(p.Categoria || 'N/A'),
+      csvCell(p.Subcategorias || 'N/A'),
       csvCell(p.Categorias || 'N/A'),
       csvCell(p.Marca || 'N/A'),
       csvCell(p.Modelo || 'N/A'),
