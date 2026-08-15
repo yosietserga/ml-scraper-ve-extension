@@ -409,6 +409,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // v6.8.0: open article in a real browser tab (with cookies/session),
     // wait for the content script to scrape the rendered DOM, return data.
     // This replaces the broken fetch()-based approach (ML serves SPAs).
+    // v6.12.1: retry on "Tabs cannot be edited right now" + timeout
     case 'FETCH_ARTICLE_IN_TAB': {
       const url = request.url;
       if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
@@ -416,27 +417,79 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
       }
       (async () => {
-        try {
-          // Open a new tab in the background (active=false)
-          const tab = await chrome.tabs.create({ url, active: false });
-          if (!tab || !tab.id) {
-            sendResponse({ success: false, error: 'Failed to create tab' });
+        const MAX_RETRIES = 2;
+        let lastError = '';
+
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            // Open a new tab in the background (active=false)
+            // v6.12.1: retry if "Tabs cannot be edited right now"
+            let tab = null;
+            for (let tabRetry = 0; tabRetry < 3; tabRetry++) {
+              try {
+                tab = await chrome.tabs.create({ url, active: false });
+                break;
+              } catch (tabErr) {
+                if (tabErr.message && tabErr.message.indexOf('cannot be edited') !== -1 && tabRetry < 2) {
+                  // User may be dragging a tab — wait and retry
+                  await new Promise(r => setTimeout(r, 1000 * (tabRetry + 1)));
+                } else {
+                  throw tabErr;
+                }
+              }
+            }
+
+            if (!tab || !tab.id) {
+              lastError = 'Failed to create tab after retries';
+              continue;  // try again
+            }
+
+            // Wait for the content script on that tab to send ARTICLE_EXTRACTED
+            const result = await new Promise((resolve, reject) => {
+              const timeout = setTimeout(() => {
+                pendingArticleExtractions.delete(tab.id);
+                reject(new Error('Tab extraction timeout (30s)'));
+              }, 30000);
+              pendingArticleExtractions.set(tab.id, { resolve, reject, timer: timeout });
+            });
+
+            // Close the tab after extraction
+            // v6.12.1: retry tab removal too
+            for (let closeRetry = 0; closeRetry < 3; closeRetry++) {
+              try {
+                await chrome.tabs.remove(tab.id);
+                break;
+              } catch (closeErr) {
+                if (closeErr.message && closeErr.message.indexOf('cannot be edited') !== -1 && closeRetry < 2) {
+                  await new Promise(r => setTimeout(r, 500 * (closeRetry + 1)));
+                } else {
+                  break;  // give up on closing, not critical
+                }
+              }
+            }
+
+            sendResponse(result);
+            return;  // success — exit retry loop
+          } catch (err) {
+            lastError = err && err.message ? err.message : String(err);
+            // If timeout or tab error and we have retries left, try again
+            if (attempt < MAX_RETRIES && (
+              lastError.indexOf('timeout') !== -1 ||
+              lastError.indexOf('cannot be edited') !== -1 ||
+              lastError.indexOf('sin respuesta') !== -1
+            )) {
+              // Wait before retry
+              await new Promise(r => setTimeout(r, 2000));
+              continue;
+            }
+            // Non-retryable error or out of retries
+            sendResponse({ success: false, error: lastError });
             return;
           }
-          // Wait for the content script on that tab to send ARTICLE_EXTRACTED
-          const result = await new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
-              pendingArticleExtractions.delete(tab.id);
-              reject(new Error('Tab extraction timeout (30s)'));
-            }, 30000);
-            pendingArticleExtractions.set(tab.id, { resolve, reject, timer: timeout });
-          });
-          // Close the tab after extraction
-          chrome.tabs.remove(tab.id).catch(() => {});
-          sendResponse(result);
-        } catch (err) {
-          sendResponse({ success: false, error: err && err.message ? err.message : String(err) });
         }
+
+        // Exhausted all retries
+        sendResponse({ success: false, error: lastError || 'Max retries exceeded' });
       })();
       return true;
     }

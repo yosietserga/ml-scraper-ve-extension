@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.12.0';
+  const EXT_VERSION = '6.12.1';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -2019,10 +2019,18 @@
         consecutive429 = 0;
 
         if (!response.ok) {
-          const errMsg = `HTTP ${response.status} ${response.statusText || ''} — crawl detenido para "${currentSearchProcess.phrase}" en ${currentUrl}`;
-          setDebugger(`[HTTP ${response.status}]: deteniendo crawl para "${currentSearchProcess.phrase}".`);
-          logError('HTTP ' + response.status, errMsg);
-          break;
+          // v6.12.1: 404 is normal — means we've paginated past available results.
+          // Don't treat as error; just move to next phrase.
+          if (response.status === 404) {
+            logActivity('CRAWL_RESPONSE', `Pág ${processedPagesCount}: HTTP 404 — fin de resultados para "${currentSearchProcess.phrase}". Pasando a la siguiente frase.`, 'info');
+            setDebugger(`[HTTP 404]: fin de resultados para "${currentSearchProcess.phrase}".`);
+            break;  // break this phrase's loop, processNextInQueue moves to next
+          }
+          // Other errors (403, 500, etc.) — log as warning and continue to next phrase
+          const errMsg = `HTTP ${response.status} ${response.statusText || ''} en ${currentUrl}`;
+          logActivity('HTTP ' + response.status, `Crawl detenido para "${currentSearchProcess.phrase}": ${errMsg}. Pasando a la siguiente frase.`, 'warn');
+          setDebugger(`[HTTP ${response.status}]: deteniendo frase "${currentSearchProcess.phrase}".`);
+          break;  // break → moves to next phrase, not a fatal stop
         }
         if (response.redirected && currentOffset > 1 && response.url.indexOf('_Desde_') === -1) {
           setDebugger('[Redirección sin paginación]: fin de resultados.');
