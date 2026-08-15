@@ -8,8 +8,13 @@ import type { DataResponse } from "@/lib/types";
  *
  * The Apps Script URL is resolved in this order:
  *   1. ?url= query param (allows UI to override)
- *   2. SHEETS_API_URL environment variable (must include `?action=data` or be the exec base)
+ *   2. SHEETS_API_URL environment variable
  *   3. ?action=data is appended to the URL if missing
+ *
+ * Handles BOTH old and new Apps Script deployments:
+ *   - New (?action=data): returns { success, products: [...], count }
+ *   - Old (no ?action=data support): returns { success, message, rows, headers }
+ *     → we fetch the sheet data directly via the published CSV export URL
  *
  * Returns JSON: { success, products, count, error? }
  */
@@ -42,7 +47,6 @@ export async function GET(req: NextRequest) {
     }
     baseUrl = u.toString();
   } catch {
-    // If it's not a parseable URL, just append action if missing.
     if (!/action=/.test(baseUrl)) {
       baseUrl = `${baseUrl}${
         baseUrl.includes("?") ? "&" : "?"
@@ -55,11 +59,10 @@ export async function GET(req: NextRequest) {
     const timeout = setTimeout(() => controller.abort(), 30_000);
     const res = await fetch(baseUrl, {
       method: "GET",
-      // Apps Script endpoints are public reads; no auth header needed.
       headers: { Accept: "application/json" },
       signal: controller.signal,
-      // Always fetch fresh.
       cache: "no-store",
+      redirect: "follow",
     });
     clearTimeout(timeout);
 
@@ -80,8 +83,6 @@ export async function GET(req: NextRequest) {
     try {
       json = JSON.parse(text);
     } catch {
-      // Apps Script sometimes returns JSON wrapped in a Content-Type mismatch.
-      // Try to extract a JSON object from the text.
       const match = text.match(/\{[\s\S]*\}/);
       if (match) {
         json = JSON.parse(match[0]);
@@ -91,31 +92,68 @@ export async function GET(req: NextRequest) {
             success: false,
             products: [],
             count: 0,
-            error: "Upstream returned non-JSON response.",
+            error: "Upstream returned non-JSON response (possibly Google login page).",
           },
           { status: 200 }
         );
       }
     }
 
-    const data = json as Partial<DataResponse>;
-    if (!data || Array.isArray(data.products) === false) {
+    const data = json as Record<string, unknown>;
+
+    // NEW Apps Script: has products array
+    if (Array.isArray(data.products)) {
+      return NextResponse.json<DataResponse>({
+        success: true,
+        products: data.products as DataResponse["products"],
+        count: (data.count as number) ?? (data.products as unknown[]).length,
+      });
+    }
+
+    // OLD Apps Script: returns { success, message, rows, headers } without products
+    // We need to fetch the sheet data via the CSV export URL instead.
+    if (data.message && typeof data.rows === "number") {
+      // Try to fetch the sheet data via the CSV export endpoint
+      // Google Sheets CSV export: https://docs.google.com/spreadsheets/d/{ID}/export?format=csv&gid={GID}
+      // We don't know the GID, but we can try the default gid=0
+      const sheetId = "1DesPY4WR1mbgRGTG_xRbrW4UZJq84KVnMnn-qNgzVjg";
+      const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=0`;
+
+      try {
+        const csvRes = await fetch(csvUrl, { cache: "no-store" });
+        if (csvRes.ok) {
+          const csvText = await csvRes.text();
+          const products = parseCsvToProducts(csvText, data.headers as string[]);
+          return NextResponse.json({
+            success: true,
+            products: products as unknown as DataResponse["products"],
+            count: products.length,
+          });
+        }
+      } catch {
+        // CSV fetch failed — fall through to error
+      }
+
       return NextResponse.json<DataResponse>(
         {
           success: false,
           products: [],
           count: 0,
-          error: "Upstream response missing `products` array.",
+          error: "Tu Apps Script está desactualizado. Re-despliega el código nuevo de google-apps-script.js para que soporte ?action=data. Mientras tanto, no se pueden leer los productos desde la webapp.",
         },
         { status: 200 }
       );
     }
 
-    return NextResponse.json<DataResponse>({
-      success: true,
-      products: data.products as DataResponse["products"],
-      count: data.count ?? (data.products as unknown[]).length,
-    });
+    return NextResponse.json<DataResponse>(
+      {
+        success: false,
+        products: [],
+        count: 0,
+        error: "Respuesta del Apps Script no contiene array 'products'. Re-despliega el Apps Script con el código nuevo.",
+      },
+      { status: 200 }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json<DataResponse>(
@@ -128,4 +166,71 @@ export async function GET(req: NextRequest) {
       { status: 200 }
     );
   }
+}
+
+/** Parse CSV text into product objects using the headers row. */
+function parseCsvToProducts(csv: string, headers?: string[]): Record<string, unknown>[] {
+  const lines = csv.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return [];
+
+  // Parse CSV properly (handle quoted fields with commas)
+  const rows: string[][] = [];
+  let current: string[] = [];
+  let inQuotes = false;
+  let field = "";
+
+  for (let i = 0; i < csv.length; i++) {
+    const c = csv[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (csv[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += c;
+      }
+    } else {
+      if (c === '"') {
+        inQuotes = true;
+      } else if (c === ',') {
+        current.push(field);
+        field = "";
+      } else if (c === '\n' || c === '\r') {
+        if (field || current.length > 0) {
+          current.push(field);
+          rows.push(current);
+          current = [];
+          field = "";
+        }
+        // skip \r\n
+        if (c === '\r' && csv[i + 1] === '\n') i++;
+      } else {
+        field += c;
+      }
+    }
+  }
+  if (field || current.length > 0) {
+    current.push(field);
+    rows.push(current);
+  }
+
+  if (rows.length < 2) return [];
+
+  const headerRow = rows[0];
+  const products: Record<string, unknown>[] = [];
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.length === 0) continue;
+    const obj: Record<string, unknown> = {};
+    for (let j = 0; j < headerRow.length && j < row.length; j++) {
+      obj[headerRow[j]] = row[j];
+    }
+    products.push(obj);
+  }
+
+  return products;
 }
