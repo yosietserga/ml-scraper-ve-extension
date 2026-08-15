@@ -77,6 +77,11 @@
     chrome.tabs.create({ url: chrome.runtime.getURL('analysis.html') });
   });
 
+  // v6.15.0: open dashboard
+  $('btn-dashboard').addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+  });
+
   // v6.10.0: sync to Google Sheets via background SW (avoids CORS)
   $('btn-sync-sheets').addEventListener('click', async () => {
     toast('Sincronizando...');

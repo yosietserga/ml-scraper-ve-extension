@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.14.1';
+  const EXT_VERSION = '6.15.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -526,8 +526,9 @@
             <div style="font-size:9px; color:#888; margin-top:3px;">Despliega el Apps Script (ver google-apps-script.js) y pega aquí la URL. Permite sync con deduplicación por MLV id.</div>
           </div>
           <div class="ml-btn-group" style="margin-top: 8px;">
-            <button class="ml-btn ml-btn-purple" id="btn-open-analysis" style="flex:1;">📊 Abrir Análisis Estratégico</button>
-            <button class="ml-btn ml-btn-secondary" id="btn-open-error-log" style="flex:1;" title="Abrir log de errores en pestaña nueva">📋 Log de Errores</button>
+            <button class="ml-btn ml-btn-purple" id="btn-open-analysis" style="flex:1;">📊 Análisis</button>
+            <button class="ml-btn ml-btn-secondary" id="btn-open-error-log" style="flex:1;" title="Log de errores">📋 Log</button>
+            <button class="ml-btn ml-btn-secondary" id="btn-open-dashboard" style="flex:1;" title="Dashboard de gestión completo">🖥️ Dashboard</button>
           </div>
           <div class="ml-btn-group" style="margin-top: 4px;">
             <button class="ml-btn ml-btn-success" id="btn-sync-sheets" style="flex:1;">📤 Sync to Google Sheets</button>
@@ -823,6 +824,16 @@
         } catch (e) {
           alert('No se pudo abrir el análisis: ' + e.message);
         }
+      };
+    }
+
+    // v6.15.0: open dashboard
+    const btnOpenDashboard = document.getElementById('btn-open-dashboard');
+    if (btnOpenDashboard) {
+      btnOpenDashboard.onclick = () => {
+        try {
+          window.open(chrome.runtime.getURL('dashboard.html'), '_blank');
+        } catch (e) {}
       };
     }
 
@@ -1907,6 +1918,21 @@
     }
 
     logActivity('SELL', `✅ Sell complete: ${mlvId} → ${newId} (${newPermalink}) — $${newPrice}`, 'info');
+
+    // v6.15.0: track published product for dashboard
+    try {
+      const pubData = await chrome.storage.local.get('ml_published_products');
+      const pubList = Array.isArray(pubData.ml_published_products) ? pubData.ml_published_products : [];
+      pubList.push({
+        originalId: mlvId,
+        newId: newId,
+        title: title,
+        price: newPrice,
+        permalink: newPermalink,
+        publishedAt: new Date().toISOString()
+      });
+      await chrome.storage.local.set({ ml_published_products: pubList });
+    } catch (e) {}
   }
 
   function toggleSelectForDeep(product) {

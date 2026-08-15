@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard — ML Scraper VE</title>
+  <link rel="stylesheet" href="dashboard.css" />
+  <link rel="icon" href="icons/icon48.png" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <img src="icons/icon48.png" alt="ML" class="topbar-logo" />
+      <div>
+        <h1>ML Management Dashboard</h1>
+        <p class="subtitle">MercadoLibre VE · Publicaciones · Métricas · Tendencias · Configuración</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button id="btn-refresh" class="btn btn-secondary">↻ Refrescar</button>
+      <button id="btn-sync-sheets" class="btn btn-success">📤 Sync Sheets</button>
+      <button id="btn-open-scraper" class="btn btn-primary" title="Ir a MercadoLibre">🛒 Ir a ML</button>
+    </div>
+  </header>
+
+  <nav class="sidebar">
+    <a class="nav-item active" data-tab="overview">📊 Resumen</a>
+    <a class="nav-item" data-tab="publications">📦 Publicaciones</a>
+    <a class="nav-item" data-tab="metrics">📈 Métricas</a>
+    <a class="nav-item" data-tab="trends">🔮 Tendencias</a>
+    <a class="nav-item" data-tab="config">⚙️ Configuración</a>
+    <a class="nav-item" data-tab="integrations">🔌 Integraciones</a>
+  </nav>
+
+  <main class="content">
+    <div id="loading" class="loading"><div class="spinner"></div><p>Cargando dashboard…</p></div>
+
+    <!-- Tab: Overview -->
+    <section id="tab-overview" class="tab-panel active" style="display:none;">
+      <div class="stats-grid" id="overview-stats"></div>
+      <div class="card-row">
+        <div class="card half">
+          <h2>🏆 Top 10 Productos por Ventas</h2>
+          <div id="overview-top-sales"></div>
+        </div>
+        <div class="card half">
+          <h2>👁 Top 10 por Visitas</h2>
+          <div id="overview-top-visits"></div>
+        </div>
+      </div>
+      <div class="card-row">
+        <div class="card half">
+          <h2>🏪 Top Vendedores</h2>
+          <div id="overview-top-sellers"></div>
+        </div>
+        <div class="card half">
+          <h2>📍 Distribución por Ciudad</h2>
+          <div id="overview-cities"></div>
+        </div>
+      </div>
+      <div class="card-row">
+        <div class="card full">
+          <h2>💰 Distribución de Precios</h2>
+          <div id="overview-price-dist"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab: Publications -->
+    <section id="tab-publications" class="tab-panel" style="display:none;">
+      <div class="card">
+        <h2>📦 Publicaciones Creadas (Vender)</h2>
+        <p class="hint">Productos copiados y publicados bajo tu cuenta con el botón Vender.</p>
+        <div id="publications-list"></div>
+      </div>
+      <div class="card">
+        <h2>📋 Todos los Productos Crawleados</h2>
+        <div style="display:flex; gap:8px; margin-bottom:12px;">
+          <input type="text" id="pub-filter" placeholder="Filtrar por nombre…" style="flex:1; padding:8px; border:1px solid #ccc; border-radius:6px;">
+          <select id="pub-sort" style="padding:8px; border:1px solid #ccc; border-radius:6px;">
+            <option value="sales_desc">Más Vendidos</option>
+            <option value="visits_desc">Más Visitas</option>
+            <option value="price_desc">Precio: Mayor</option>
+            <option value="price_asc">Precio: Menor</option>
+            <option value="score_desc">Mejor Score</option>
+          </select>
+        </div>
+        <div id="all-products-list"></div>
+      </div>
+    </section>
+
+    <!-- Tab: Metrics -->
+    <section id="tab-metrics" class="tab-panel" style="display:none;">
+      <div class="stats-grid" id="metrics-stats"></div>
+      <div class="card-row">
+        <div class="card full">
+          <h2>📊 Métricas de Demanda</h2>
+          <div id="metrics-demand"></div>
+        </div>
+      </div>
+      <div class="card-row">
+        <div class="card half">
+          <h2>⭐ Distribución de Scores</h2>
+          <div id="metrics-scores"></div>
+        </div>
+        <div class="card half">
+          <h2>📦 Distribución por Categoría</h2>
+          <div id="metrics-categories"></div>
+        </div>
+      </div>
+      <div class="card-row">
+        <div class="card full">
+          <h2>🏪 Análisis de Vendedores</h2>
+          <div id="metrics-sellers"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab: Trends -->
+    <section id="tab-trends" class="tab-panel" style="display:none;">
+      <div class="card">
+        <h2>🔮 Análisis de Tendencias y Proyecciones</h2>
+        <p class="hint">Proyecciones basadas en visitas, ventas y scores de los productos crawleados.</p>
+        <div id="trends-content"></div>
+      </div>
+      <div class="card">
+        <h2>🎯 Oportunidades Detectadas (Algoritmo)</h2>
+        <div id="trends-opportunities"></div>
+      </div>
+      <div class="card">
+        <h2>⚠️ Riesgos y Alertas</h2>
+        <div id="trends-risks"></div>
+      </div>
+    </section>
+
+    <!-- Tab: Config -->
+    <section id="tab-config" class="tab-panel" style="display:none;">
+      <div class="card">
+        <h2>⚙️ Configuración General</h2>
+        <div class="config-grid" id="config-general"></div>
+      </div>
+      <div class="card">
+        <h2>💰 Configuración de Venta</h2>
+        <div class="config-grid" id="config-sell"></div>
+      </div>
+      <div class="card">
+        <h2>🚀 Automatización</h2>
+        <div class="config-grid" id="config-automation"></div>
+      </div>
+    </section>
+
+    <!-- Tab: Integrations -->
+    <section id="tab-integrations" class="tab-panel" style="display:none;">
+      <div class="card">
+        <h2>🔌 Google Sheets</h2>
+        <div class="config-grid" id="integration-sheets"></div>
+      </div>
+      <div class="card">
+        <h2>🔗 Webhooks</h2>
+        <p class="hint">Configura webhooks para enviar datos a servicios externos (Zapier, Make, Slack, Telegram, etc.)</p>
+        <div id="webhooks-list"></div>
+        <button class="btn btn-primary" id="btn-add-webhook" style="margin-top:12px;">+ Agregar Webhook</button>
+      </div>
+      <div class="card">
+        <h2>📱 ML API</h2>
+        <div class="config-grid" id="integration-api"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
