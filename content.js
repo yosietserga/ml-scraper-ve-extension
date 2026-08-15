@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.13.3';
+  const EXT_VERSION = '6.13.4';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -332,6 +332,7 @@
     .ml-item-price { font-weight: bold; color: #00a650; }
     .ml-badge-sales { background: #e3f2fd; color: #0d47a1; padding: 1px 4px; border-radius: 3px; font-weight: bold; font-size: 9px; }
     .ml-badge-visits { background: #fce4ec; color: #ad1457; padding: 1px 4px; border-radius: 3px; font-weight: bold; font-size: 9px; }
+    .ml-badge-extracted { background: #c8e6c9; color: #2e7d32; padding: 1px 5px; border-radius: 3px; font-weight: bold; font-size: 8px; margin-left: 4px; vertical-align: middle; }
     #ml-preview-card { position: fixed; width: 230px; background: #fff; border: 1px solid #ccc; border-radius: 8px; box-shadow: 0 8px 20px rgba(0,0,0,0.25); padding: 10px; z-index: 2147483647; pointer-events: none; display: none; font-size: 11px; }
     #ml-preview-card img { width: 100%; height: 140px; object-fit: contain; border-radius: 4px; margin-bottom: 6px; }
     #ml-notification-banner { display: none; background: #00a650; color: #fff; padding: 10px; border-radius: 6px; font-size: 12px; text-align: center; font-weight: bold; margin-bottom: 10px; }
@@ -1372,6 +1373,12 @@
       const card = document.createElement('div');
       card.className = 'ml-item-card' + (isSelected ? ' selected-for-deep' : '');
 
+      // v6.13.4: check if product is fully deep-extracted (has seller data)
+      // Source of truth: has Vendedor_Nombre that's not 'Pendiente'/'No especificado'
+      const isExtracted = p.DeepExtracted && p.Vendedor_Nombre &&
+        p.Vendedor_Nombre !== 'Pendiente' && p.Vendedor_Nombre !== 'No especificado' &&
+        p.Vendedor_Nombre !== 'N/A';
+
       // XSS-safe: build innerHTML with escaped values
       const imgSrc = escapeAttr(p.Imagen || '');
       const title = escapeHtml(p.Nombre || '');
@@ -1380,15 +1387,18 @@
       const scoreStr = escapeHtml(String(p.Score || 0));
       const salesStr = escapeHtml(p.Ventas > 0 ? ('+' + p.Ventas + ' vendidos') : 'Destacado');
       const currency = escapeHtml(p.Moneda || '');
-      // v6.3.0: show visit count if we have it (only populated after deep extraction + visits fetch)
       const visitsStr = p.Visitas > 0
         ? '<span class="ml-badge-visits" title="Visitas reales (10 días, ML API)">👁 ' + escapeHtml(String(p.Visitas)) + '</span>'
+        : '';
+      // v6.13.4: extracted indicator badge
+      const extractedBadge = isExtracted
+        ? '<span class="ml-badge-extracted" title="Producto ya procesado (deep extraction completo)">✅ Extraído</span>'
         : '';
 
       card.innerHTML = `
         <img src="${imgSrc}" class="ml-item-img" alt="Product" onerror="this.style.opacity='0.3'">
         <div class="ml-item-info">
-          <div class="ml-item-title" title="${title}">${title}</div>
+          <div class="ml-item-title" title="${title}">${title} ${extractedBadge}</div>
           <div class="ml-item-details">
             <span class="ml-item-price">${escapeHtml(currency ? currency + ' ' : '')}${escapeHtml(priceNum)}</span>
             <span>★ ${scoreStr}</span>
@@ -1397,7 +1407,7 @@
           </div>
         </div>
         <div style="display:flex; gap:4px; align-items:center;">
-          <button class="ml-btn select-deep-btn" style="padding:4px 6px; font-size:10px; background:${isSelected ? '#2d3277' : '#e0e0e0'}; color:${isSelected ? '#fff' : '#333'};">+ Deep</button>
+          <button class="ml-btn select-deep-btn" style="padding:4px 6px; font-size:10px; background:${isSelected ? '#2d3277' : '#e0e0e0'}; color:${isSelected ? '#fff' : '#333'};">${isExtracted ? '🔄 Re-Deep' : '+ Deep'}</button>
           <button class="ml-btn sell-btn" style="padding:4px 6px; font-size:10px; background:#00a650; color:#fff;" title="Vender: copiar y publicar bajo tu cuenta">💰 Vender</button>
           <a href="${link}" target="_blank" rel="noopener" class="ml-btn ml-btn-secondary" style="padding:4px 6px;" title="Ver Producto">🔗</a>
           <button class="ml-btn ml-btn-danger remove-btn" style="padding:4px 6px;" title="Eliminar">${ICONS.trash}</button>
@@ -2581,11 +2591,29 @@
     let processed = 0;
     let successCount = 0;
     let failCount = 0;
+    let skippedCount = 0;
 
     while (deepQueue.length > 0 && isDeepCrawling) {
       const current = deepQueue[0];
       const rawLink = typeof current === 'string' ? current : current.Link;
       const mlvId = extractMlvId(rawLink) || rawLink;
+
+      // v6.13.4: skip products that are already fully deep-extracted.
+      // Source of truth: Vendedor_Nombre is not 'Pendiente'/'No especificado'/'N/A'
+      // AND DeepExtracted is true.
+      // Check the products array for the matching product.
+      const existingProduct = products.find(p => extractMlvId(p.Link) === mlvId || p.id === mlvId);
+      if (existingProduct && existingProduct.DeepExtracted && existingProduct.Vendedor_Nombre &&
+          existingProduct.Vendedor_Nombre !== 'Pendiente' &&
+          existingProduct.Vendedor_Nombre !== 'No especificado' &&
+          existingProduct.Vendedor_Nombre !== 'N/A') {
+        skippedCount++;
+        logActivity('DEEP_SKIP', `${mlvId}: Already extracted (seller="${existingProduct.Vendedor_Nombre}"). Skipping.`, 'info');
+        deepQueue.shift();
+        await persistDeepQueue();
+        continue;
+      }
+
       processed++;
 
       const statusEl = document.getElementById('ml-status');
@@ -2674,7 +2702,7 @@
       await new Promise((r) => setTimeout(r, delay));
     }
 
-    logActivity('DEEP_DONE', `Deep extraction finished: ${processed} processed, ${successCount} success, ${failCount} fail, visits=${visitsDisabled ? 'DISABLED' : 'enabled'}`, 'info');
+    logActivity('DEEP_DONE', `Deep extraction finished: ${processed} processed, ${successCount} success, ${failCount} fail, ${skippedCount} skipped (already extracted), visits=${visitsDisabled ? 'DISABLED' : 'enabled'}`, 'info');
 
     isDeepCrawling = false;
     if (modal) modal.classList.remove('crawling-active');
