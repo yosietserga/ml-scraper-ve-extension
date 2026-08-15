@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.13.0';
+  const EXT_VERSION = '6.13.1';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -2310,23 +2310,93 @@
     });
 
     // v6.9.0: extract seller page link from footer button
-    // v6.13.0: also extract category_id, seller_id, item_id from the link's query params
+    // v6.13.0: also extract category_id, seller_id from the link's query params
+    // v6.13.1: also extract from Nordic embedded JSON (most reliable source)
     let categoryId = '';
     let sellerId = '';
+
+    // v6.13.1: Try Nordic JSON first (most reliable — contains ALL data)
+    // The article page has a <script id="__NORDIC_RENDERING_CTX__"> with full JSON
+    const nordicScript = doc.querySelector('script#__NORDIC_RENDERING_CTX__');
+    if (nordicScript) {
+      try {
+        const rawText = nordicScript.textContent || nordicScript.innerText || '';
+        // Extract the JSON object from _n.ctx.r={...}
+        const jsonMatch = rawText.match(/_n\.ctx\.r=(\{[\s\S]*\});?\s*$/);
+        if (jsonMatch) {
+          const jsonStr = jsonMatch[1].replace(/\\u002F/g, '/');
+          const nordicData = JSON.parse(jsonStr);
+          // Navigate to components
+          const state = nordicData?.appProps?.pageProps?.initialState || {};
+          const components = state.components || {};
+          // Search all component groups for item data
+          for (const groupKey of Object.keys(components)) {
+            const group = components[groupKey];
+            if (!Array.isArray(group)) continue;
+            for (const comp of group) {
+              if (!comp || typeof comp !== 'object') continue;
+              const cs = comp.state;
+              if (!cs || !cs.id || !String(cs.id).startsWith('MLV')) continue;
+              // Found the item component!
+              categoryId = cs.category_id || categoryId;
+              sellerId = String(cs.seller_id || sellerId || '');
+              if (cs.title && !title) title = cs.title;
+              if (cs.price && parsedPrice.num === 0) parsedPrice.num = cs.price;
+              if (cs.currency_id && parsedPrice.currency === 'N/A') parsedPrice.currency = cs.currency_id;
+              if (cs.condition) {} // we already have condition from DOM
+              // Extract attributes
+              if (Array.isArray(cs.attributes) && cs.attributes.length > 0) {
+                for (const attr of cs.attributes) {
+                  const aId = attr.id || '';
+                  const aName = (attr.name || '').toLowerCase();
+                  const aVal = attr.value_name || '';
+                  if (aId === 'BRAND' || aName === 'marca') brand = aVal || brand;
+                  if (aId === 'MODEL' || aName === 'modelo') model = aVal || model;
+                  if (aVal) specList.push(`${attr.name || aId}: ${aVal}`);
+                }
+              }
+              // Extract pictures
+              if (Array.isArray(cs.pictures) && cs.pictures.length > 0 && !imageSrc) {
+                imageSrc = cs.pictures[0].secure_url || cs.pictures[0].url || '';
+              }
+              // Extract seller nickname
+              if (cs.seller && cs.seller.nickname) {
+                sellerName = cs.seller.nickname;
+              }
+              // Sold quantity (real, not from badge)
+              if (cs.sold_quantity !== undefined && salesCount === 0) {
+                salesCount = cs.sold_quantity;
+              }
+              break;
+            }
+          }
+        }
+      } catch (e) {
+        // Nordic JSON parse failed — fall back to DOM scraping (already done above)
+      }
+    }
+
+    // Fallback: extract from seller footer link if Nordic didn't work
+    const sellerFooterLinkEl = queryFirst(doc, [
+      '.ui-seller-data-footer__container a',
+      '.ui-seller-data-footer a[href]',
+      'a[href*="/pagina/"]'
+    ]);
     if (sellerFooterLinkEl) {
       const rawHref = sellerFooterLinkEl.href || sellerFooterLinkEl.getAttribute('href') || '';
       sellerPageLink = cleanPermalink(rawHref);
       // Extract category_id=MLV1676 from URL params
-      try {
-        const u = new URL(rawHref);
-        categoryId = u.searchParams.get('category_id') || '';
-        sellerId = u.searchParams.get('seller_id') || '';
-      } catch (e) {
-        // Fallback: regex
-        const catMatch = rawHref.match(/category_id=(MLV\d+)/i);
-        if (catMatch) categoryId = catMatch[1];
-        const sellerMatch = rawHref.match(/seller_id=(\d+)/i);
-        if (sellerMatch) sellerId = sellerMatch[1];
+      if (!categoryId) {
+        try {
+          const u = new URL(rawHref);
+          categoryId = u.searchParams.get('category_id') || '';
+          sellerId = u.searchParams.get('seller_id') || sellerId;
+        } catch (e) {
+          const catMatch = rawHref.match(/category_id=(MLV\d+)/i);
+          if (catMatch) categoryId = catMatch[1];
+          const sellerMatch = rawHref.match(/seller_id=(\d+)/i);
+          if (sellerMatch) sellerId = sellerMatch[1];
+        }
       }
     }
 
