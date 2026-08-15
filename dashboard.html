@@ -54,6 +54,15 @@
       <a class="nav-item" data-tab="opportunities" title="Oportunidades A1">
         <span class="nav-ic">🎯</span><span class="nav-lbl">Oportunidades</span>
       </a>
+      <a class="nav-item" data-tab="sheet_opps" title="Oportunidades del Sheet (calle / OSINT)">
+        <span class="nav-ic">📋</span><span class="nav-lbl">Opp. Sheet</span>
+      </a>
+      <a class="nav-item" data-tab="sheet_published" title="Publicaciones en el Sheet (Vender)">
+        <span class="nav-ic">📤</span><span class="nav-lbl">Pub. Sheet</span>
+      </a>
+      <a class="nav-item" data-tab="sheet_sales" title="Ventas (desde el Sheet)">
+        <span class="nav-ic">💰</span><span class="nav-lbl">Ventas</span>
+      </a>
       <a class="nav-item" data-tab="tools" title="Calculadoras y herramientas">
         <span class="nav-ic">🛠️</span><span class="nav-lbl">Herramientas</span>
       </a>
@@ -290,6 +299,106 @@
           <div class="card-head"><h3>💡 Demanda Latente</h3></div>
           <p class="hint">Productos con muchas visitas pero baja conversión. Oportunidad de copiar y mejorar el listing.</p>
           <div id="latent-demand" class="card-body"></div>
+        </div>
+      </section>
+
+      <!-- ========== SHEET OPPORTUNITIES ========== -->
+      <section id="tab-sheet_opps" class="tab-panel" style="display:none;">
+        <div class="page-head">
+          <h2>📋 Oportunidades del Sheet</h2>
+          <p class="page-sub">Capturadas desde la calle, WhatsApp, Instagram u otros — bidireccional con Google Sheets</p>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h3>📋 Lista de Oportunidades <span class="badge" id="sheet-opp-count">0</span></h3>
+            <div class="card-actions">
+              <button id="btn-refresh-sheet-opps" class="btn btn-ghost btn-sm">↻ Refrescar</button>
+              <a id="btn-open-opp-page" class="btn btn-yellow btn-sm" href="opportunities.html" target="_blank">➕ Capturar nueva</a>
+            </div>
+          </div>
+          <p class="hint">Lee de la hoja <code>meli_opportunities</code>. Cada oportunidad puede tener estado: <b>pending</b> (⏳), <b>publishing</b> (⏳), <b>published</b> (✓), <b>failed</b> (✕).</p>
+          <div class="filters-bar">
+            <input type="text" id="sheet-opp-filter" placeholder="🔍 Filtrar por nombre, marca, ubicación..." />
+            <select id="sheet-opp-status-filter">
+              <option value="all">Todas</option>
+              <option value="pending" selected>Solo pendientes</option>
+              <option value="published">Publicadas</option>
+              <option value="failed">Fallidas</option>
+            </select>
+            <select id="sheet-opp-sort">
+              <option value="created_desc">Más recientes</option>
+              <option value="created_asc">Más antiguas</option>
+              <option value="price_desc">Precio: Mayor</option>
+              <option value="price_asc">Precio: Menor</option>
+            </select>
+          </div>
+          <div id="sheet-opps-list" class="card-body table-wrap"></div>
+        </div>
+      </section>
+
+      <!-- ========== SHEET PUBLISHED ========== -->
+      <section id="tab-sheet_published" class="tab-panel" style="display:none;">
+        <div class="page-head">
+          <h2>📤 Publicaciones del Sheet</h2>
+          <p class="page-sub">Productos publicados con el botón Vender — tracking desde el Sheet</p>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h3>📤 Publicados en Sheet <span class="badge" id="sheet-pub-count">0</span></h3>
+            <div class="card-actions">
+              <button id="btn-refresh-sheet-pub" class="btn btn-ghost btn-sm">↻ Refrescar</button>
+            </div>
+          </div>
+          <p class="hint">Lee de la hoja <code>meli_published</code>. Columnas: Title, Price, Markup, Permalink, Views, Sales.</p>
+          <div class="filters-bar">
+            <input type="text" id="sheet-pub-filter" placeholder="🔍 Filtrar por título..." />
+            <select id="sheet-pub-sort">
+              <option value="pub_desc">Más recientes</option>
+              <option value="pub_asc">Más antiguas</option>
+              <option value="price_desc">Precio: Mayor</option>
+              <option value="price_asc">Precio: Menor</option>
+              <option value="views_desc">Más Visitas</option>
+              <option value="sales_desc">Más Ventas</option>
+            </select>
+          </div>
+          <div id="sheet-pub-list" class="card-body table-wrap"></div>
+        </div>
+      </section>
+
+      <!-- ========== SHEET SALES ========== -->
+      <section id="tab-sheet_sales" class="tab-panel" style="display:none;">
+        <div class="page-head">
+          <h2>💰 Ventas</h2>
+          <p class="page-sub">Tracking de órdenes desde el Sheet — profit real tras comisiones ML + envío</p>
+        </div>
+        <div class="stats-grid" id="sheet-sales-stats"></div>
+        <div class="card">
+          <div class="card-head">
+            <h3>📋 Órdenes <span class="badge" id="sheet-sales-count">0</span></h3>
+            <div class="card-actions">
+              <button id="btn-refresh-sheet-sales" class="btn btn-ghost btn-sm">↻ Refrescar</button>
+            </div>
+          </div>
+          <p class="hint">Lee de la hoja <code>meli_sales</code>. Profit = Sale_Price − ML_Fee − Shipping_Cost.</p>
+          <div class="filters-bar">
+            <input type="text" id="sheet-sales-filter" placeholder="🔍 Filtrar por título, buyer, order ID..." />
+            <select id="sheet-sales-status-filter">
+              <option value="all">Todas</option>
+              <option value="paid">Pagadas</option>
+              <option value="pending">Pendientes</option>
+              <option value="cancelled">Canceladas</option>
+              <option value="shipped">Enviadas</option>
+              <option value="delivered">Entregadas</option>
+            </select>
+            <select id="sheet-sales-sort">
+              <option value="date_desc">Más recientes</option>
+              <option value="date_asc">Más antiguas</option>
+              <option value="profit_desc">Mayor Profit</option>
+              <option value="profit_asc">Menor Profit</option>
+              <option value="price_desc">Mayor Precio</option>
+            </select>
+          </div>
+          <div id="sheet-sales-list" class="card-body table-wrap"></div>
         </div>
       </section>
 

@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.15.0';
+  const EXT_VERSION = '6.18.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -339,6 +339,8 @@
     .ml-detail-box { background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin-top: 8px; font-size: 11px; }
     .ml-detail-row { display: flex; justify-content: space-between; border-bottom: 1px solid #eee; padding: 3px 0; }
     .ml-debug-box { background: #1e1e1e; color: #00ff66; font-family: monospace; font-size: 10px; padding: 8px; border-radius: 6px; word-break: break-all; margin-bottom: 10px; max-height: 60px; overflow-y: auto; }
+    .ml-tab-badge-wrap { display:inline-flex; align-items:center; padding: 10px 4px; align-self: center; }
+    .ml-tab-badge { background: #ff5252; color: #fff; font-size: 10px; font-weight: 700; border-radius: 10px; padding: 1px 6px; min-width: 18px; text-align: center; cursor: pointer; }
   `;
 
   /* ------------------------------------------------------------------ */
@@ -387,6 +389,9 @@
         ${!isArticlePage ? '<div class="ml-tab active" data-target="tab-search">Buscador</div>' : ''}
         <div class="ml-tab ${isArticlePage ? 'active' : ''}" data-target="tab-results">Resultados (<span id="tab-count">${products.length}</span>)</div>
         <div class="ml-tab" data-target="tab-config">Filtros & Config</div>
+        <span class="ml-tab-badge-wrap" title="Oportunidades pendientes en el Sheet">
+          <span class="ml-tab-badge" id="opp-pending-count" style="display:none;">0</span>
+        </span>
       </div>
       <div class="ml-content">
         <div id="ml-notification-banner">&#10004; ¡Extracción Profunda Completada!</div>
@@ -437,6 +442,12 @@
             </label>
             <label style="font-size:10px; display:flex; align-items:center; gap:4px; cursor:pointer;">
               <input type="checkbox" id="cfg-auto-sync" style="margin:0;"> 📤 Auto Sync Sheets al terminar
+            </label>
+          </div>
+          <!-- v6.18.0: Auto-publish opportunities from the Sheet -->
+          <div class="ml-btn-group" style="margin-top: 4px;">
+            <label style="font-size:10px; display:flex; align-items:center; gap:4px; cursor:pointer;">
+              <input type="checkbox" id="cfg-auto-publish-opps" style="margin:0;"> 🚀 Auto-publicar oportunidades del Sheet
             </label>
           </div>
           <div class="ml-queue-box">
@@ -529,6 +540,9 @@
             <button class="ml-btn ml-btn-purple" id="btn-open-analysis" style="flex:1;">📊 Análisis</button>
             <button class="ml-btn ml-btn-secondary" id="btn-open-error-log" style="flex:1;" title="Log de errores">📋 Log</button>
             <button class="ml-btn ml-btn-secondary" id="btn-open-dashboard" style="flex:1;" title="Dashboard de gestión completo">🖥️ Dashboard</button>
+          </div>
+          <div class="ml-btn-group" style="margin-top: 4px;">
+            <button class="ml-btn ml-btn-secondary" id="btn-open-opportunities" style="flex:1;" title="Captura oportunidades de la calle → Sheet">📋 Oportunidades Pendientes</button>
           </div>
           <div class="ml-btn-group" style="margin-top: 4px;">
             <button class="ml-btn ml-btn-success" id="btn-sync-sheets" style="flex:1;">📤 Sync to Google Sheets</button>
@@ -902,6 +916,43 @@
     if (btnSyncSheets) {
       btnSyncSheets.onclick = () => syncToGoogleSheets();
     }
+
+    // v6.18.0: open the opportunities.html capture page
+    const btnOpenOpportunities = document.getElementById('btn-open-opportunities');
+    if (btnOpenOpportunities) {
+      btnOpenOpportunities.onclick = () => {
+        try {
+          window.open(chrome.runtime.getURL('opportunities.html'), '_blank');
+        } catch (e) {
+          alert('No se pudo abrir oportunidades.html: ' + e.message);
+        }
+      };
+    }
+
+    // v6.18.0: the pending-count badge is also clickable (opens opps page)
+    const oppBadge = document.getElementById('opp-pending-count');
+    if (oppBadge) {
+      oppBadge.onclick = () => {
+        try {
+          window.open(chrome.runtime.getURL('opportunities.html'), '_blank');
+        } catch (e) {}
+      };
+      oppBadge.title = 'Click para abrir oportunidades.html';
+    }
+
+    // v6.18.0: load the saved auto-publish-opps checkbox state
+    const autoPublishOpps = document.getElementById('cfg-auto-publish-opps');
+    if (autoPublishOpps) {
+      chrome.storage.local.get('ml_auto_publish_opps', (data) => {
+        autoPublishOpps.checked = !!data.ml_auto_publish_opps;
+      });
+      autoPublishOpps.addEventListener('change', () => {
+        chrome.storage.local.set({ ml_auto_publish_opps: !!autoPublishOpps.checked });
+      });
+    }
+
+    // v6.18.0: fetch pending opportunity count on modal open
+    refreshOppBadge();
   }
 
   /** v6.9.0: Sync all products to Google Sheets via the Apps Script web app.
@@ -942,6 +993,252 @@
       if (btn) { btn.disabled = false; btn.innerText = '📤 Sync to Google Sheets'; }
     }
   }
+
+  /* ------------------------------------------------------------------ */
+  /* v6.18.0: Opportunities integration                                */
+  /*                                                                    */
+  /*  - refreshOppBadge()       : GET ?action=opportunities, show count */
+  /*  - autoPublishOpportunities(): after deep extraction, reads the    */
+  /*    pending opportunities from the sheet, runs each through the     */
+  /*    Vender flow, then updates the opportunity's Status to           */
+  /*    'published' + Published_ID, or 'failed' + Error_Message.        */
+  /*  - publishOpportunityFromSheet(opp): public hook that              */
+  /*    opportunities.html (opened as window.opener) can call to drive  */
+  /*    an opportunity through the same Vender flow.                    */
+  /* ------------------------------------------------------------------ */
+
+  async function getGSheetsUrl() {
+    const data = await chrome.storage.local.get(STORAGE_KEY_GSHEETS_URL);
+    return data[STORAGE_KEY_GSHEETS_URL] || '';
+  }
+
+  async function fetchPendingOpportunities() {
+    const url = await getGSheetsUrl();
+    if (!url) return [];
+    try {
+      const qs = url.indexOf('?') === -1 ? '?' : '&';
+      const resp = await fetch(url + qs + 'action=opportunities');
+      const text = await resp.text();
+      const trimmed = (text || '').trim();
+      if (trimmed.charAt(0) === '<' || trimmed.indexOf('<html') !== -1) return [];
+      const json = JSON.parse(trimmed);
+      if (json && json.success && Array.isArray(json.rows)) return json.rows;
+      return [];
+    } catch (e) {
+      logActivity('OPP', 'fetchPendingOpportunities error: ' + (e && e.message), 'error');
+      return [];
+    }
+  }
+
+  async function refreshOppBadge() {
+    const badge = document.getElementById('opp-pending-count');
+    if (!badge) return;
+    const url = await getGSheetsUrl();
+    if (!url) { badge.style.display = 'none'; return; }
+    try {
+      const opps = await fetchPendingOpportunities();
+      if (opps.length > 0) {
+        badge.textContent = String(opps.length);
+        badge.style.display = 'inline-block';
+      } else {
+        badge.style.display = 'none';
+      }
+    } catch (e) {
+      // Silent failure — don't surface errors for a badge poll.
+    }
+  }
+
+  /** v6.18.0: Build a fake product object that mimics the shape the
+   *  Vender flow expects, from an opportunity row.
+   *  Used by both auto-publish and the manual "Publicar" button on
+   *  opportunities.html (via window.opener.publishOpportunityFromSheet).
+   */
+  function opportunityToProduct(opp) {
+    if (!opp) opp = {};
+    const price = parseFloat(opp.Suggested_Price || opp.suggestedPrice) || 0;
+    const markup = parseFloat(opp.Markup_Percent || opp.markup) || 20;
+    const finalPrice = price > 0 ? price : Math.ceil((parseFloat(opp.Estimated_Cost || opp.cost) || 0) * (1 + markup / 100));
+    return {
+      id: opp.Opp_ID || opp.id || 'opp_' + Date.now(),
+      Nombre: opp.Product_Name || opp.name || '(Oportunidad sin nombre)',
+      Precio_Numerico: finalPrice,
+      Moneda: 'USD',
+      Marca: opp.Brand || opp.brand || 'N/A',
+      Modelo: opp.Modelo || opp.model || 'N/A',
+      Imagen: opp.Photo_URL || opp.photo || '',
+      Link: '',
+      Categoria: opp.Category || opp.category || 'N/A',
+      Especificaciones: '',
+      Vendedor_Nombre: 'N/A',
+      // Vender flow's "all sell data" check requires these to be truthy
+      DeepExtracted: true,
+      CategoryId: '',
+      NordicAttrs: {},
+      AllPictures: opp.Photo_URL ? [opp.Photo_URL] : [],
+      _isOpportunity: true,
+      _opp: opp
+    };
+  }
+
+  /** v6.18.0: Publish an opportunity through the Vender flow.
+   *  Called from the "Publicar" button on opportunities.html via
+   *  window.opener.publishOpportunityFromSheet(opp).
+   *  Returns a promise resolving to { success, publishedId?, error? }.
+   */
+  async function publishOpportunityFromSheet(opp) {
+    if (!opp) return { success: false, error: 'No opportunity provided' };
+    logActivity('OPP', `💰 Publishing opportunity ${opp.Opp_ID || opp.id}: ${opp.Product_Name || opp.name}`, 'info');
+    try {
+      // Optimistically mark the opportunity as "publishing"
+      await updateOpportunityStatus(opp.Opp_ID || opp.id, 'publishing', '', '');
+
+      // Wrap in a synthetic product and run it through the existing Vender flow
+      const product = opportunityToProduct(opp);
+      // _sellProductInternal writes to chrome.storage.local (ml_published_products)
+      // but we also want the sheet updated, so we capture the result via a
+      // post-step rather than rewriting _sellProductInternal.
+      // We can't easily intercept its internal state, so we trigger it and
+      // then look at the latest published product in storage.
+      const beforeData = await chrome.storage.local.get('ml_published_products');
+      const beforeList = Array.isArray(beforeData.ml_published_products) ? beforeData.ml_published_products : [];
+      const beforeIds = new Set(beforeList.map(p => p.newId));
+
+      await _sellProductInternal(product);
+
+      // After the sell completes, check what new published entry was added.
+      const afterData = await chrome.storage.local.get('ml_published_products');
+      const afterList = Array.isArray(afterData.ml_published_products) ? afterData.ml_published_products : [];
+      const newPub = afterList.find(p => !beforeIds.has(p.newId));
+      if (newPub && newPub.newId) {
+        // Push to meli_published sheet + update opportunity status
+        await postAddPublished(newPub);
+        await updateOpportunityStatus(opp.Opp_ID || opp.id, 'published', newPub.newId, '');
+        logActivity('OPP', `✅ Opportunity ${opp.Opp_ID || opp.id} → ${newPub.newId}`, 'info');
+        return { success: true, publishedId: newPub.newId, permalink: newPub.permalink };
+      } else {
+        // _sellProductInternal may have bailed early (missing token, etc).
+        // Surface the latest debug message as the error.
+        const dbg = document.getElementById('url-debugger');
+        const errMsg = dbg ? dbg.innerText : 'Vender flow did not produce a new listing';
+        await updateOpportunityStatus(opp.Opp_ID || opp.id, 'failed', '', errMsg.substring(0, 300));
+        logActivity('OPP', `❌ Opportunity ${opp.Opp_ID || opp.id} FAILED: ${errMsg}`, 'error');
+        return { success: false, error: errMsg };
+      }
+    } catch (err) {
+      const errMsg = err && err.message ? err.message : String(err);
+      await updateOpportunityStatus(opp.Opp_ID || opp.id, 'failed', '', errMsg.substring(0, 300));
+      logActivity('OPP', `❌ Opportunity ${opp.Opp_ID || opp.id} EXCEPTION: ${errMsg}`, 'error');
+      return { success: false, error: errMsg };
+    }
+  }
+
+  /** v6.18.0: Auto-publish hook — runs after deep extraction completes,
+   *  if the user has enabled "🚀 Auto-publicar oportunidades del Sheet".
+   *  Reads pending opportunities, publishes each, updates the sheet.
+   */
+  async function autoPublishOpportunities() {
+    const cb = document.getElementById('cfg-auto-publish-opps');
+    const stored = await chrome.storage.local.get('ml_auto_publish_opps');
+    const enabled = cb ? cb.checked : !!stored.ml_auto_publish_opps;
+    if (!enabled) return;
+
+    const url = await getGSheetsUrl();
+    if (!url) {
+      logActivity('OPP', 'Auto-publish skipped: no Sheets URL configured.', 'info');
+      return;
+    }
+    const tokenData = await chrome.storage.local.get(STORAGE_KEY_ACCESS_TOKEN);
+    if (!tokenData[STORAGE_KEY_ACCESS_TOKEN]) {
+      logActivity('OPP', 'Auto-publish skipped: no ML API token configured.', 'warn');
+      return;
+    }
+
+    logActivity('OPP', 'Auto-publish: reading pending opportunities from sheet...', 'info');
+    const opps = await fetchPendingOpportunities();
+    if (opps.length === 0) {
+      logActivity('OPP', 'Auto-publish: no pending opportunities.', 'info');
+      refreshOppBadge();
+      return;
+    }
+
+    const statusEl = document.getElementById('ml-status');
+    logActivity('OPP', `Auto-publish: ${opps.length} pending opportunities will be published.`, 'info');
+
+    let okCount = 0, failCount = 0;
+    for (let i = 0; i < opps.length; i++) {
+      const opp = opps[i];
+      if (statusEl) statusEl.innerText = `🚀 Auto-publish ${i + 1}/${opps.length}: ${opp.Product_Name || '(no name)'}`;
+      logActivity('OPP', `Auto-publish ${i + 1}/${opps.length}: ${opp.Opp_ID} — ${opp.Product_Name}`, 'info');
+      try {
+        const r = await publishOpportunityFromSheet(opp);
+        if (r && r.success) okCount++; else failCount++;
+      } catch (e) {
+        failCount++;
+        logActivity('OPP', `Auto-publish exception on ${opp.Opp_ID}: ${e.message}`, 'error');
+      }
+      // Small delay between publishes to be gentle on the ML API.
+      await new Promise(r => setTimeout(r, 800));
+    }
+
+    logActivity('OPP', `Auto-publish complete: ${okCount} published, ${failCount} failed.`, 'info');
+    if (statusEl) statusEl.innerText = `🚀 Auto-publish complete: ${okCount} OK, ${failCount} failed.`;
+    refreshOppBadge();
+  }
+
+  /** v6.18.0: POST to add_published endpoint.
+   *  Used by publishOpportunityFromSheet to mirror the new published
+   *  product into the meli_published sheet (in addition to the existing
+   *  ml_published_products chrome.storage entry that _sellProductInternal writes).
+   */
+  async function postAddPublished(pubProduct) {
+    const url = await getGSheetsUrl();
+    if (!url) return;
+    try {
+      const payload = {
+        action: 'add_published',
+        product: {
+          Published_ID: pubProduct.newId,
+          Original_ID: pubProduct.originalId,
+          Title: pubProduct.title,
+          Price: pubProduct.price,
+          Currency: 'USD',
+          Permalink: pubProduct.permalink,
+          Published_At: pubProduct.publishedAt,
+          Status: 'active'
+        }
+      };
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+    } catch (e) {
+      logActivity('OPP', 'postAddPublished error: ' + (e && e.message), 'error');
+    }
+  }
+
+  /** v6.18.0: POST to update_opportunity endpoint — patch Status, Published_ID, Error_Message. */
+  async function updateOpportunityStatus(oppId, status, publishedId, errorMsg) {
+    if (!oppId) return;
+    const url = await getGSheetsUrl();
+    if (!url) return;
+    try {
+      const payload = { action: 'update_opportunity', id: oppId, status: status };
+      if (publishedId) payload.publishedId = publishedId;
+      if (errorMsg !== undefined) payload.error = errorMsg;
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+    } catch (e) {
+      logActivity('OPP', 'updateOpportunityStatus error: ' + (e && e.message), 'error');
+    }
+  }
+
+  // v6.18.0: expose hook on window so opportunities.html can drive publishes
+  // via window.opener.publishOpportunityFromSheet(opp).
+  window.publishOpportunityFromSheet = publishOpportunityFromSheet;
 
   /* ------------------------------------------------------------------ */
   /* Price / currency parsing                                          */
@@ -1932,6 +2229,22 @@
         publishedAt: new Date().toISOString()
       });
       await chrome.storage.local.set({ ml_published_products: pubList });
+
+      // v6.18.0: also mirror to the meli_published sheet (if Sheets URL is set),
+      // so external apps / dashboards can read it directly from the spreadsheet.
+      // Fire-and-forget — a sheet write failure must not break the Vender flow.
+      try {
+        await postAddPublished({
+          newId: newId,
+          originalId: mlvId,
+          title: title,
+          price: newPrice,
+          permalink: newPermalink,
+          publishedAt: pubList[pubList.length - 1].publishedAt
+        });
+      } catch (sheetErr) {
+        logActivity('SELL', `⚠ Sheet mirror failed (non-blocking): ${sheetErr.message}`, 'warn');
+      }
     } catch (e) {}
   }
 
@@ -2851,6 +3164,16 @@
       setTimeout(() => { if (banner) banner.style.display = 'none'; }, 4000);
     }
     playNotificationSound();
+
+    // v6.18.0: Auto-publish pending opportunities from the sheet, if enabled.
+    // Fire-and-forget — never blocks the deep-extraction completion path.
+    try {
+      autoPublishOpportunities();
+    } catch (oppErr) {
+      logActivity('OPP', 'autoPublishOpportunities threw: ' + (oppErr && oppErr.message), 'error');
+    }
+    // Refresh the opportunity count badge after deep extraction.
+    refreshOppBadge();
   }
 
   /** v6.7.0: Build a product object from the ML Items API JSON response.

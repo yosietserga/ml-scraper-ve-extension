@@ -1487,6 +1487,378 @@
   }
 
   /* ======================================================================
+   * SHEET TABS (v6.18.0)
+   *
+   *  - sheet_opps     : meli_opportunities from Apps Script (?action=opportunities&all=true)
+   *  - sheet_published : meli_published from Apps Script (?action=published)
+   *  - sheet_sales    : meli_sales from Apps Script (?action=sales)
+   *
+   *  All three share a common fetch helper + render table pattern.
+   * ====================================================================== */
+  let sheetOpps = [];
+  let sheetPublished = [];
+  let sheetSales = [];
+
+  function sheetsGet(action, extra) {
+    if (!config.gsheetsUrl) {
+      return Promise.reject(new Error('Falta la URL del Apps Script en Configuración.'));
+    }
+    const qs = ['action=' + encodeURIComponent(action)];
+    Object.keys(extra || {}).forEach(k => {
+      qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(extra[k]));
+    });
+    const sep = config.gsheetsUrl.indexOf('?') === -1 ? '?' : '&';
+    const url = config.gsheetsUrl + sep + qs.join('&');
+    return fetch(url)
+      .then(r => r.text())
+      .then(text => {
+        const trimmed = (text || '').trim();
+        if (trimmed.charAt(0) === '<' || trimmed.indexOf('<html') !== -1) {
+          throw new Error('Google devolvió HTML. Re-autoriza el Apps Script.');
+        }
+        return JSON.parse(trimmed);
+      });
+  }
+
+  function sheetsPost(payload) {
+    if (!config.gsheetsUrl) {
+      return Promise.reject(new Error('Falta la URL del Apps Script en Configuración.'));
+    }
+    return fetch(config.gsheetsUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    }).then(r => r.text()).then(text => {
+      const trimmed = (text || '').trim();
+      if (trimmed.charAt(0) === '<' || trimmed.indexOf('<html') !== -1) {
+        throw new Error('Google devolvió HTML. Re-autoriza el Apps Script.');
+      }
+      return JSON.parse(trimmed);
+    });
+  }
+
+  function sheetNum(v, fallback) {
+    if (v === null || v === undefined || v === '') return fallback || 0;
+    const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[^0-9.-]/g, ''));
+    return isNaN(n) ? (fallback || 0) : n;
+  }
+
+  function sheetRowStatusBadge(st) {
+    const s = String(st || 'pending').toLowerCase();
+    const map = {
+      pending: ['⏳ Pendiente', 'pending'],
+      publishing: ['⏳ Publicando', 'publishing'],
+      published: ['✓ Publicada', 'published'],
+      failed: ['✕ Fallida', 'failed'],
+      deleted: ['🗑 Eliminada', 'failed']
+    };
+    const pair = map[s] || ['⏳ Pendiente', 'pending'];
+    return '<span class="status-badge status-' + pair[1] + '">' + pair[0] + '</span>';
+  }
+
+  /* ----- Sheet Opportunities ----- */
+  function renderSheetOpps() {
+    const el = $('sheet-opps-list');
+    if (!el) return;
+    if (!config.gsheetsUrl) {
+      el.innerHTML = '<div class="empty-state"><div class="empty-ic">⚙️</div>' +
+        '<p>Falta configurar la URL del Apps Script. Ve a la pestaña Integraciones o Configuración.</p></div>';
+      $('sheet-opp-count').textContent = '0';
+      return;
+    }
+    if (sheetOpps.__loading) {
+      el.innerHTML = '<div class="empty-state"><div class="empty-ic">⏳</div><p>Cargando oportunidades...</p></div>';
+      return;
+    }
+    const q = ($('sheet-opp-filter') ? $('sheet-opp-filter').value : '').toLowerCase().trim();
+    const statusFilter = $('sheet-opp-status-filter') ? $('sheet-opp-status-filter').value : 'all';
+    const sortMode = $('sheet-opp-sort') ? $('sheet-opp-sort').value : 'created_desc';
+
+    let rows = sheetOpps.filter(o => {
+      if (statusFilter !== 'all' && String(o.Status || 'pending').toLowerCase() !== statusFilter) return false;
+      if (!q) return true;
+      const hay = [o.Product_Name, o.Brand, o.Model, o.Category, o.Location_Found, o.Notes].join(' ').toLowerCase();
+      return hay.indexOf(q) !== -1;
+    });
+
+    rows.sort((a, b) => {
+      switch (sortMode) {
+        case 'created_asc': return String(a.Created_At || '').localeCompare(String(b.Created_At || ''));
+        case 'created_desc': return String(b.Created_At || '').localeCompare(String(a.Created_At || ''));
+        case 'price_asc': return sheetNum(a.Suggested_Price) - sheetNum(b.Suggested_Price);
+        case 'price_desc': return sheetNum(b.Suggested_Price) - sheetNum(a.Suggested_Price);
+      }
+      return 0;
+    });
+
+    $('sheet-opp-count').textContent = String(rows.length);
+
+    if (rows.length === 0) {
+      el.innerHTML = emptyHtml('📭',
+        sheetOpps.length === 0 ? 'Sin oportunidades capturadas. Abre opportunities.html desde la extensión para capturar la primera.'
+          : 'Ninguna oportunidad coincide con los filtros.');
+      return;
+    }
+
+    el.innerHTML = '<table class="data-table"><thead><tr>' +
+      '<th>Producto</th><th>Costo</th><th>Venta</th><th>Markup</th>' +
+      '<th>Origen</th><th>Ubicación</th><th>Estado</th><th>Creada</th><th>Acciones</th>' +
+      '</tr></thead><tbody>' +
+      rows.map(o => {
+        const st = String(o.Status || 'pending').toLowerCase();
+        const tip = [
+          o.Product_Name || '(sin nombre)',
+          o.Brand ? 'Marca: ' + o.Brand : '',
+          o.Model ? 'Modelo: ' + o.Model : '',
+          o.Notes ? 'Notas: ' + o.Notes : '',
+          o.Category ? 'Categoría: ' + o.Category : '',
+          o.Error_Message ? 'Error: ' + o.Error_Message : ''
+        ].filter(Boolean).join('\n');
+        const actions = [];
+        if (st === 'pending' || st === 'failed') {
+          actions.push('<button class="btn btn-success btn-sm" data-opppub="' + escapeAttr(o.Opp_ID) + '" title="Publicar vía Vender">💰 Publicar</button>');
+        }
+        if (o.Published_ID) {
+          actions.push('<a class="btn btn-navy btn-sm" href="https://articulo.mercadolibre.com.ve/' + escapeAttr(String(o.Published_ID).replace(/^MLV-?/i, 'MLV-')) + '" target="_blank" rel="noopener" title="Abrir publicación ML">🔗 Ver</a>');
+        }
+        return '<tr title="' + escapeAttr(tip) + '">' +
+          '<td><div style="font-weight:600;">' + escapeHtml((o.Product_Name || '').substring(0, 50)) + '</div>' +
+            (o.Brand ? '<div style="font-size:10px;color:var(--text-muted);">' + escapeHtml(o.Brand) + (o.Model ? ' · ' + escapeHtml(o.Model) : '') + '</div>' : '') +
+            (o.Notes ? '<div style="font-size:10px;color:var(--text-muted);margin-top:2px;">' + escapeHtml((o.Notes || '').substring(0, 60)) + (o.Notes.length > 60 ? '...' : '') + '</div>' : '') +
+          '</td>' +
+          '<td style="color:var(--ml-red);font-weight:700;">$' + fmt(sheetNum(o.Estimated_Cost)) + '</td>' +
+          '<td style="color:var(--ml-green);font-weight:700;">$' + fmt(sheetNum(o.Suggested_Price)) + '</td>' +
+          '<td>' + escapeHtml(o.Markup_Percent || '20') + '%</td>' +
+          '<td style="font-size:11px;">' + escapeHtml(o.Source || '—') + '</td>' +
+          '<td style="font-size:11px;">' + escapeHtml(o.Location_Found || '—') + '</td>' +
+          '<td>' + sheetRowStatusBadge(o.Status) + '</td>' +
+          '<td style="font-size:11px;">' + (o.Created_At ? escapeHtml(new Date(o.Created_At).toLocaleString('es-VE')) : '—') + '</td>' +
+          '<td><div style="display:flex;gap:3px;flex-wrap:wrap;">' + actions.join('') + '</div></td>' +
+        '</tr>';
+      }).join('') +
+      '</tbody></table>';
+
+    el.querySelectorAll('[data-opppub]').forEach(btn => {
+      btn.onclick = async () => {
+        const id = btn.getAttribute('data-opppub');
+        const opp = sheetOpps.find(o => String(o.Opp_ID) === String(id));
+        if (!opp) return;
+        showToast('💰 Marcando como "publishing"...');
+        try {
+          await sheetsPost({ action: 'update_opportunity', id: id, status: 'publishing' });
+        } catch (e) {}
+        try { window.open('opportunities.html', '_blank'); } catch (e) {}
+        showToast('Abre opportunities.html para continuar la publicación.', 'success');
+      };
+    });
+  }
+
+  async function loadSheetOpps() {
+    if (!config.gsheetsUrl) { sheetOpps = []; renderSheetOpps(); return; }
+    sheetOpps.__loading = true;
+    renderSheetOpps();
+    try {
+      const res = await sheetsGet('opportunities', { all: 'true' });
+      sheetOpps = (res && res.success && Array.isArray(res.rows)) ? res.rows : [];
+    } catch (e) {
+      sheetOpps = [];
+      showToast('❌ ' + e.message, 'error');
+    }
+    sheetOpps.__loading = false;
+    renderSheetOpps();
+  }
+
+  /* ----- Sheet Published ----- */
+  function renderSheetPub() {
+    const el = $('sheet-pub-list');
+    if (!el) return;
+    if (!config.gsheetsUrl) {
+      el.innerHTML = '<div class="empty-state"><div class="empty-ic">⚙️</div>' +
+        '<p>Falta configurar la URL del Apps Script. Ve a Integraciones.</p></div>';
+      $('sheet-pub-count').textContent = '0';
+      return;
+    }
+    if (sheetPublished.__loading) {
+      el.innerHTML = '<div class="empty-state"><div class="empty-ic">⏳</div><p>Cargando publicaciones...</p></div>';
+      return;
+    }
+    const q = ($('sheet-pub-filter') ? $('sheet-pub-filter').value : '').toLowerCase().trim();
+    const sortMode = $('sheet-pub-sort') ? $('sheet-pub-sort').value : 'pub_desc';
+
+    let rows = sheetPublished.filter(p => {
+      if (!q) return true;
+      return [p.Title, p.Original_ID, p.Published_ID, p.Category_Id].join(' ').toLowerCase().indexOf(q) !== -1;
+    });
+
+    rows.sort((a, b) => {
+      switch (sortMode) {
+        case 'pub_asc': return String(a.Published_At || '').localeCompare(String(b.Published_At || ''));
+        case 'pub_desc': return String(b.Published_At || '').localeCompare(String(a.Published_At || ''));
+        case 'price_asc': return sheetNum(a.Price) - sheetNum(b.Price);
+        case 'price_desc': return sheetNum(b.Price) - sheetNum(a.Price);
+        case 'views_desc': return sheetNum(b.Views_30d) - sheetNum(a.Views_30d);
+        case 'sales_desc': return sheetNum(b.Sales_30d) - sheetNum(a.Sales_30d);
+      }
+      return 0;
+    });
+
+    $('sheet-pub-count').textContent = String(rows.length);
+
+    if (rows.length === 0) {
+      el.innerHTML = emptyHtml('📭',
+        sheetPublished.length === 0 ? 'Sin publicaciones en el Sheet todavía. Usa el botón 💰 Vender en cualquier producto crawleado.'
+          : 'Ninguna publicación coincide con el filtro.');
+      return;
+    }
+
+    el.innerHTML = '<table class="data-table"><thead><tr>' +
+      '<th>Título</th><th>Original ID</th><th>Precio</th><th>Markup</th>' +
+      '<th>Visitas 30d</th><th>Ventas 30d</th><th>Estado</th><th>Publicado</th><th>Acciones</th>' +
+      '</tr></thead><tbody>' +
+      rows.map(p => {
+        const tip = [p.Title, 'Original: ' + p.Original_ID, 'Publicado: ' + p.Published_ID, 'Precio: $' + fmt(sheetNum(p.Price))].join('\n');
+        return '<tr title="' + escapeAttr(tip) + '">' +
+          '<td><div style="font-weight:600;">' + escapeHtml((p.Title || '').substring(0, 50)) + '</div>' +
+            (p.Category_Id ? '<div style="font-size:10px;color:var(--text-muted);">' + escapeHtml(p.Category_Id) + '</div>' : '') + '</td>' +
+          '<td><code>' + escapeHtml(p.Original_ID || '—') + '</code></td>' +
+          '<td><b>$' + fmt(sheetNum(p.Price)) + '</b><br><span style="font-size:10px;color:var(--text-muted);">' + escapeHtml(p.Currency || 'USD') + '</span></td>' +
+          '<td>' + (p.Markup_Percent ? escapeHtml(p.Markup_Percent) + '%' : '—') + '</td>' +
+          '<td>' + (p.Views_30d ? fmt(sheetNum(p.Views_30d, 0)) : '—') + '</td>' +
+          '<td style="color:var(--ml-green);font-weight:700;">' + (p.Sales_30d ? fmt(sheetNum(p.Sales_30d, 0)) : '—') + '</td>' +
+          '<td>' + escapeHtml(p.Status || 'active') + '</td>' +
+          '<td style="font-size:11px;">' + (p.Published_At ? escapeHtml(new Date(p.Published_At).toLocaleString('es-VE')) : '—') + '</td>' +
+          '<td>' + (p.Permalink ? '<a class="btn btn-navy btn-sm" href="' + escapeAttr(p.Permalink) + '" target="_blank" rel="noopener">🔗 Ver</a>' : '—') + '</td>' +
+        '</tr>';
+      }).join('') +
+      '</tbody></table>';
+  }
+
+  async function loadSheetPub() {
+    if (!config.gsheetsUrl) { sheetPublished = []; renderSheetPub(); return; }
+    sheetPublished.__loading = true;
+    renderSheetPub();
+    try {
+      const res = await sheetsGet('published');
+      sheetPublished = (res && res.success && Array.isArray(res.rows)) ? res.rows : [];
+    } catch (e) {
+      sheetPublished = [];
+      showToast('❌ ' + e.message, 'error');
+    }
+    sheetPublished.__loading = false;
+    renderSheetPub();
+  }
+
+  /* ----- Sheet Sales ----- */
+  function renderSheetSales() {
+    const el = $('sheet-sales-list');
+    if (!el) return;
+    if (!config.gsheetsUrl) {
+      el.innerHTML = '<div class="empty-state"><div class="empty-ic">⚙️</div>' +
+        '<p>Falta configurar la URL del Apps Script. Ve a Integraciones.</p></div>';
+      $('sheet-sales-count').textContent = '0';
+      $('sheet-sales-stats').innerHTML = '';
+      return;
+    }
+    if (sheetSales.__loading) {
+      el.innerHTML = '<div class="empty-state"><div class="empty-ic">⏳</div><p>Cargando ventas...</p></div>';
+      return;
+    }
+    const q = ($('sheet-sales-filter') ? $('sheet-sales-filter').value : '').toLowerCase().trim();
+    const statusFilter = $('sheet-sales-status-filter') ? $('sheet-sales-status-filter').value : 'all';
+    const sortMode = $('sheet-sales-sort') ? $('sheet-sales-sort').value : 'date_desc';
+
+    let rows = sheetSales.filter(s => {
+      if (statusFilter !== 'all' && String(s.Status || '').toLowerCase() !== statusFilter) return false;
+      if (!q) return true;
+      return [s.Order_ID, s.Item_ID, s.Title, s.Buyer_Nickname].join(' ').toLowerCase().indexOf(q) !== -1;
+    });
+
+    rows.sort((a, b) => {
+      switch (sortMode) {
+        case 'date_asc': return String(a.Sale_Date || '').localeCompare(String(b.Sale_Date || ''));
+        case 'date_desc': return String(b.Sale_Date || '').localeCompare(String(a.Sale_Date || ''));
+        case 'price_desc': return sheetNum(b.Sale_Price) - sheetNum(a.Sale_Price);
+        case 'profit_desc': return sheetNum(b.Net_Profit) - sheetNum(a.Net_Profit);
+        case 'profit_asc': return sheetNum(a.Net_Profit) - sheetNum(b.Net_Profit);
+      }
+      return 0;
+    });
+
+    $('sheet-sales-count').textContent = String(rows.length);
+
+    const totalRevenue = rows.reduce((s, r) => s + sheetNum(r.Sale_Price), 0);
+    const totalFees = rows.reduce((s, r) => s + sheetNum(r.ML_Fee), 0);
+    const totalShipping = rows.reduce((s, r) => s + sheetNum(r.Shipping_Cost), 0);
+    const totalProfit = rows.reduce((s, r) => s + sheetNum(r.Net_Profit), 0);
+    $('sheet-sales-stats').innerHTML = `
+      <div class="stat-card green"><div class="stat-lbl">Ingresos</div><div class="stat-val">$${fmt(totalRevenue)}</div><div class="stat-sub">${rows.length} órdenes</div></div>
+      <div class="stat-card red"><div class="stat-lbl">Comisiones ML</div><div class="stat-val">$${fmt(totalFees)}</div><div class="stat-sub">${totalRevenue > 0 ? pct(totalFees / totalRevenue * 100) : '—'}</div></div>
+      <div class="stat-card orange"><div class="stat-lbl">Envíos</div><div class="stat-val">$${fmt(totalShipping)}</div><div class="stat-sub">${totalRevenue > 0 ? pct(totalShipping / totalRevenue * 100) : '—'}</div></div>
+      <div class="stat-card navy"><div class="stat-lbl">Profit Neto</div><div class="stat-val">$${fmt(totalProfit)}</div><div class="stat-sub">${totalRevenue > 0 ? pct(totalProfit / totalRevenue * 100) : '—'}</div></div>
+    `;
+
+    if (rows.length === 0) {
+      el.innerHTML = emptyHtml('📭',
+        sheetSales.length === 0 ? 'Sin ventas registradas en el Sheet. Las ventas aparecerán aquí cuando cargues órdenes de ML.'
+          : 'Ninguna venta coincide con los filtros.');
+      return;
+    }
+
+    el.innerHTML = '<table class="data-table"><thead><tr>' +
+      '<th>Orden</th><th>Item</th><th>Title</th><th>Precio</th><th>ML Fee</th>' +
+      '<th>Envío</th><th>Profit</th><th>Buyer</th><th>Fecha</th><th>Estado</th>' +
+      '</tr></thead><tbody>' +
+      rows.map(s => {
+        const profit = sheetNum(s.Net_Profit);
+        const profitColor = profit > 0 ? 'var(--ml-green)' : 'var(--ml-red)';
+        return '<tr>' +
+          '<td><code>' + escapeHtml(s.Order_ID || '') + '</code></td>' +
+          '<td><code>' + escapeHtml(s.Item_ID || '') + '</code></td>' +
+          '<td style="font-weight:600;">' + escapeHtml((s.Title || '').substring(0, 40)) + '</td>' +
+          '<td><b>$' + fmt(sheetNum(s.Sale_Price)) + '</b></td>' +
+          '<td style="color:var(--ml-red);">$' + fmt(sheetNum(s.ML_Fee)) + '</td>' +
+          '<td style="color:var(--ml-orange);">$' + fmt(sheetNum(s.Shipping_Cost)) + '</td>' +
+          '<td style="color:' + profitColor + ';font-weight:700;">$' + fmt(profit) + '</td>' +
+          '<td>' + escapeHtml(s.Buyer_Nickname || '') + '</td>' +
+          '<td style="font-size:11px;">' + (s.Sale_Date ? escapeHtml(new Date(s.Sale_Date).toLocaleString('es-VE')) : '—') + '</td>' +
+          '<td>' + escapeHtml(s.Status || '—') + '</td>' +
+        '</tr>';
+      }).join('') +
+      '</tbody></table>';
+  }
+
+  async function loadSheetSales() {
+    if (!config.gsheetsUrl) { sheetSales = []; renderSheetSales(); return; }
+    sheetSales.__loading = true;
+    renderSheetSales();
+    try {
+      const res = await sheetsGet('sales');
+      sheetSales = (res && res.success && Array.isArray(res.rows)) ? res.rows : [];
+    } catch (e) {
+      sheetSales = [];
+      showToast('❌ ' + e.message, 'error');
+    }
+    sheetSales.__loading = false;
+    renderSheetSales();
+  }
+
+  function wireSheetTabs() {
+    $('btn-refresh-sheet-opps')?.addEventListener('click', loadSheetOpps);
+    $('sheet-opp-filter')?.addEventListener('input', renderSheetOpps);
+    $('sheet-opp-status-filter')?.addEventListener('change', renderSheetOpps);
+    $('sheet-opp-sort')?.addEventListener('change', renderSheetOpps);
+
+    $('btn-refresh-sheet-pub')?.addEventListener('click', loadSheetPub);
+    $('sheet-pub-filter')?.addEventListener('input', renderSheetPub);
+    $('sheet-pub-sort')?.addEventListener('change', renderSheetPub);
+
+    $('btn-refresh-sheet-sales')?.addEventListener('click', loadSheetSales);
+    $('sheet-sales-filter')?.addEventListener('input', renderSheetSales);
+    $('sheet-sales-status-filter')?.addEventListener('change', renderSheetSales);
+    $('sheet-sales-sort')?.addEventListener('change', renderSheetSales);
+  }
+
+  /* ======================================================================
    * Tab router
    * ====================================================================== */
   function renderTab(tab) {
@@ -1496,6 +1868,9 @@
       case 'sellers': renderSellers(); break;
       case 'categories': renderCategories(); break;
       case 'opportunities': renderOpportunities(); break;
+      case 'sheet_opps': renderSheetOpps(); loadSheetOpps(); break;
+      case 'sheet_published': renderSheetPub(); loadSheetPub(); break;
+      case 'sheet_sales': renderSheetSales(); loadSheetSales(); break;
       case 'tools': renderTools(); break;
       case 'trends': renderTrends(); break;
       case 'integrations': renderIntegrations(); break;
@@ -1710,5 +2085,6 @@
   wireTopbar();
   wireFilters();
   wireDynamicClicks();
+  wireSheetTabs();
   document.addEventListener('DOMContentLoaded', boot);
 })();

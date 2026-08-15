@@ -174,11 +174,28 @@ body {
 .stat-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
 .stat-val { font-size: 26px; font-weight: 700; color: var(--ml-navy); line-height: 1.1; }
 .stat-lbl { font-size: 10px; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-sub { font-size: 11px; color: var(--text-light); margin-top: 4px; }
 .stat-card.green .stat-val { color: var(--ml-green); }
 .stat-card.orange .stat-val { color: var(--ml-orange); }
 .stat-card.red .stat-val { color: var(--ml-red); }
 .stat-card.yellow .stat-val { color: var(--ml-yellow-dark); }
 .stat-card.navy .stat-val { color: var(--ml-navy); }
+
+/* ===== Status badges (sheet rows) ===== */
+.status-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+.status-pending { background: rgba(255, 145, 0, 0.18); color: #c75f00; }
+.status-publishing { background: rgba(45, 50, 119, 0.18); color: var(--ml-navy); }
+.status-published { background: rgba(0, 166, 80, 0.18); color: var(--ml-green-dark); }
+.status-failed { background: rgba(230, 36, 58, 0.18); color: var(--ml-red); }
 
 /* ===== Cards ===== */
 .card-row { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }

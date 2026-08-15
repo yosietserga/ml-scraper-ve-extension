@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "MercadoLibre VE Scraper Master",
-  "version": "6.17.0",
-  "description": "Scraper avanzado para MercadoLibre Venezuela con almacenamiento centralizado, sincronización entre pestañas y extracción profunda de vendedores.",
+  "version": "6.18.0",
+  "description": "Scraper avanzado para MercadoLibre Venezuela con almacenamiento centralizado, sincronización entre pestañas, extracción profunda de vendedores, multi-sheet bidireccional y captura de oportunidades móviles.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -49,8 +49,18 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["icons/*.png", "analysis.html", "analysis.css", "analysis.js", "error-log.html", "error-log.js", "google-apps-script.js", "dashboard.html", "dashboard.css", "dashboard.js"],
-      "matches": ["https://*.mercadolibre.com.ve/*", "https://mercadolibre.com.ve/*"]
+      "resources": [
+        "icons/*.png",
+        "analysis.html", "analysis.css", "analysis.js",
+        "error-log.html", "error-log.js",
+        "google-apps-script.js",
+        "dashboard.html", "dashboard.css", "dashboard.js",
+        "opportunities.html", "opportunities.css", "opportunities.js"
+      ],
+      "matches": [
+        "https://*.mercadolibre.com.ve/*",
+        "https://mercadolibre.com.ve/*"
+      ]
     }
   ]
 }

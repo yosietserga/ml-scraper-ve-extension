@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#2d3277" />
+  <title>Oportunidades — ML Scraper VE</title>
+  <link rel="stylesheet" href="opportunities.css" />
+  <link rel="icon" href="icons/icon48.png" />
+</head>
+<body>
+  <header class="opp-header">
+    <div class="opp-header-left">
+      <img src="icons/icon48.png" alt="" class="opp-logo" />
+      <div>
+        <h1>Oportunidades</h1>
+        <p class="opp-subtitle">Captura productos de la calle → Sincrónizalos con tu Sheet</p>
+      </div>
+    </div>
+    <div class="opp-header-right">
+      <span id="opp-connection" class="conn-badge inactive" title="Estado de la conexión con Google Sheets">● Sin conexión</span>
+    </div>
+  </header>
+
+  <main class="opp-main">
+    <!-- ===== Capture form ===== -->
+    <section class="card capture-card">
+      <div class="card-head">
+        <h2>📸 Nueva Oportunidad</h2>
+        <button id="btn-toggle-form" class="btn btn-ghost btn-sm" title="Mostrar / ocultar el formulario" aria-expanded="true">▾</button>
+      </div>
+      <form id="opp-form" class="opp-form">
+        <!-- Photo capture -->
+        <div class="photo-row">
+          <label for="opp-photo" class="photo-pick" id="opp-photo-pick">
+            <span class="photo-pick-ic">📷</span>
+            <span class="photo-pick-lbl">Tomar foto / Subir imagen</span>
+            <span class="photo-pick-hint">Toca aquí para usar la cámara</span>
+          </label>
+          <input type="file" id="opp-photo" accept="image/*" capture="environment" hidden />
+          <div id="opp-photo-preview" class="photo-preview" hidden>
+            <img id="opp-photo-img" alt="Vista previa de la foto del producto" />
+            <button type="button" id="btn-clear-photo" class="btn btn-danger btn-sm photo-clear" title="Quitar foto">✕</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="opp-name">Nombre del producto *</label>
+          <input type="text" id="opp-name" placeholder="Ej: Licuadora Oster 1.5L" required maxlength="120" />
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="opp-cost">Costo estimado (USD) *</label>
+            <input type="number" id="opp-cost" placeholder="0" min="0" step="0.01" required inputmode="decimal" />
+          </div>
+          <div class="field">
+            <label for="opp-price">Precio sugerido (USD)</label>
+            <input type="number" id="opp-price" placeholder="0" min="0" step="0.01" inputmode="decimal" />
+          </div>
+          <div class="field field-sm">
+            <label for="opp-markup">Markup %</label>
+            <input type="number" id="opp-markup" placeholder="20" min="0" step="5" value="20" inputmode="numeric" />
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="opp-category">Categoría</label>
+            <input type="text" id="opp-category" placeholder="Ej: Electrodomésticos" list="opp-categories" />
+            <datalist id="opp-categories"></datalist>
+          </div>
+          <div class="field">
+            <label for="opp-brand">Marca</label>
+            <input type="text" id="opp-brand" placeholder="Ej: Oster" />
+          </div>
+          <div class="field">
+            <label for="opp-model">Modelo</label>
+            <input type="text" id="opp-model" placeholder="BLSTEG" />
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="opp-location">Ubicación</label>
+            <input type="text" id="opp-location" placeholder="Ej: Mercado de Coche, Caracas" />
+          </div>
+          <div class="field">
+            <label for="opp-source">Origen</label>
+            <select id="opp-source">
+              <option value="street">Calle (caminata)</option>
+              <option value="whatsapp">WhatsApp</option>
+              <option value="instagram">Instagram</option>
+              <option value="friend">Amigo / Contacto</option>
+              <option value="supplier">Proveedor conocido</option>
+              <option value="other">Otro</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="opp-notes">Notas</label>
+          <textarea id="opp-notes" rows="3" placeholder="Estado del producto, condiciones de pago, cantidad mínima, etc."></textarea>
+        </div>
+
+        <div class="actions">
+          <button type="submit" id="btn-submit-opp" class="btn btn-success">
+            <span class="ic">💾</span> Guardar oportunidad
+          </button>
+          <button type="reset" id="btn-reset-opp" class="btn btn-ghost">Limpiar</button>
+        </div>
+        <p id="opp-form-feedback" class="form-feedback" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <!-- ===== URL config (collapsible) ===== -->
+    <section class="card config-card">
+      <div class="card-head">
+        <h2>⚙️ Configuración</h2>
+        <button id="btn-toggle-config" class="btn btn-ghost btn-sm" aria-expanded="false">▸</button>
+      </div>
+      <div id="config-body" class="config-body" hidden>
+        <div class="field">
+          <label for="cfg-url">Google Apps Script URL</label>
+          <input type="text" id="cfg-url" placeholder="https://script.google.com/macros/s/AKfyc.../exec" />
+          <p class="hint">Pégala aquí una vez — se guarda en localStorage y se usa para todas las operaciones.</p>
+        </div>
+        <div class="actions">
+          <button type="button" id="btn-save-url" class="btn btn-primary">Guardar URL</button>
+          <button type="button" id="btn-test-url" class="btn btn-ghost">Probar conexión</button>
+        </div>
+        <p id="cfg-feedback" class="form-feedback" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <!-- ===== Pending opportunities list ===== -->
+    <section class="card list-card">
+      <div class="card-head">
+        <h2>📋 Pendientes <span id="opp-count-badge" class="badge">0</span></h2>
+        <div class="card-actions">
+          <button id="btn-refresh-opps" class="btn btn-ghost btn-sm" title="Recargar desde el Sheet">↻ Refrescar</button>
+        </div>
+      </div>
+      <div class="filters-bar">
+        <input type="text" id="opp-filter" placeholder="🔍 Filtrar por nombre, marca, ubicación..." />
+        <select id="opp-status-filter">
+          <option value="pending">Solo pendientes</option>
+          <option value="all">Todas</option>
+          <option value="published">Publicadas</option>
+          <option value="failed">Fallidas</option>
+        </select>
+      </div>
+      <div id="opp-list" class="opp-list">
+        <div class="empty-state">
+          <div class="empty-ic">📭</div>
+          <p>Cargando oportunidades...</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Queue (offline pending submissions) ===== -->
+    <section class="card queue-card" id="queue-card" hidden>
+      <div class="card-head">
+        <h2>📤 Cola Offline <span id="queue-count" class="badge badge-warn">0</span></h2>
+        <div class="card-actions">
+          <button id="btn-sync-queue" class="btn btn-primary btn-sm" title="Intentar sincronizar la cola ahora">Sync now</button>
+          <button id="btn-clear-queue" class="btn btn-danger btn-sm">Borrar cola</button>
+        </div>
+      </div>
+      <p class="hint">Estas oportunidades se guardaron mientras estabas sin internet. Se sincronizarán automáticamente cuando vuelva la conexión.</p>
+      <div id="queue-list" class="opp-list"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="opportunities.js"></script>
+</body>
+</html>
