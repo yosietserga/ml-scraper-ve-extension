@@ -394,6 +394,35 @@ async function postItemDescription(itemId, descriptionText, accessToken) {
 }
 
 /* ------------------------------------------------------------------ */
+/* ML Categories API (v6.13.0)                                         */
+/*                                                                    */
+/* These endpoints are NOT blocked by PolicyAgent (verified working): */
+/*   GET /categories/{id}           → category info + path_from_root  */
+/*   GET /categories/{id}/attributes → required attributes + values   */
+/* Used by the Vender button to auto-fill category_id + attributes.   */
+/* ------------------------------------------------------------------ */
+
+async function fetchCategoryAttributes(categoryId, accessToken) {
+  if (!categoryId) return { success: false, error: 'No category id' };
+  const headers = {};
+  if (accessToken && typeof accessToken === 'string' && accessToken.trim()) {
+    headers['Authorization'] = 'Bearer ' + accessToken.trim();
+  }
+  try {
+    const url = `https://api.mercadolibre.com/categories/${encodeURIComponent(categoryId)}/attributes`;
+    const response = await fetch(url, { headers, credentials: 'omit' });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return { success: false, error: 'HTTP ' + response.status, body: text };
+    }
+    const attributes = await response.json();
+    return { success: true, attributes };
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Message router                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -618,6 +647,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const tokenData = await chrome.storage.local.get(STORAGE_KEYS.ACCESS_TOKEN);
         const token = tokenData[STORAGE_KEYS.ACCESS_TOKEN] || '';
         const result = await postItemDescription(request.itemId, request.description, token);
+        sendResponse(result);
+      })().catch((err) => sendResponse({ success: false, error: String(err) }));
+      return true;
+    }
+
+    // v6.13.0: fetch category required attributes
+    case 'FETCH_CATEGORY_ATTRS': {
+      (async () => {
+        const tokenData = await chrome.storage.local.get(STORAGE_KEYS.ACCESS_TOKEN);
+        const token = tokenData[STORAGE_KEYS.ACCESS_TOKEN] || '';
+        const result = await fetchCategoryAttributes(request.categoryId, token);
         sendResponse(result);
       })().catch((err) => sendResponse({ success: false, error: String(err) }));
       return true;

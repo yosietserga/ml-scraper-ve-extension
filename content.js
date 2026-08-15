@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.12.2';
+  const EXT_VERSION = '6.13.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -1545,94 +1545,141 @@
     }, 350);
   }
 
-  /** v6.12.2: Sell — copies a product and publishes it under the user's ML account.
-   *  Uses the SCRAPED data from deep extraction (not the blocked GET /items/{id} API).
-   *  ML blocks GET /items/{id} with PolicyAgent 403, so we build the POST payload
-   *  from the product data we already have + fetch the category attributes via API.
-   *
+  /** v6.13.0: Sell — fully automated, no browser dialogs.
    *  Flow:
-   *    1. Check token + product data (must be deep-extracted)
-   *    2. Build POST payload from scraped data (title, price * markup, image, etc.)
-   *    3. Fetch category required attributes via GET /categories/{catId}/attributes
-   *    4. POST_ITEM (POST /items → create new listing)
-   *    5. POST_ITEM_DESC (add description with original seller reference)
-   *  Requires a valid ML access token in Filtros & Config.
+   *    1. Check token
+   *    2. Auto deep-extract if needed (opens tab, scrapes DOM)
+   *    3. Auto-detect category_id from seller page link params
+   *    4. Auto-fetch required attributes via GET /categories/{catId}/attributes
+   *    5. Match scraped Marca/Modelo to attribute value IDs
+   *    6. POST /items to create listing
+   *    7. POST /items/{id}/description
+   *  Status shown in the UI status bar + activity log, not browser dialogs.
    */
   async function sellProduct(product) {
     const mlvId = extractMlvId(product.Link) || product.id;
     const title = product.Nombre || '(sin título)';
     const price = product.Precio_Numerico || 0;
 
-    // Check token first
+    const updateSellStatus = (msg) => {
+      setDebugger(msg);
+      const statusEl = document.getElementById('ml-status');
+      if (statusEl) statusEl.innerText = msg;
+      logActivity('SELL', msg, 'info');
+    };
+
+    // Check token
     const tokenData = await chrome.storage.local.get(STORAGE_KEY_ACCESS_TOKEN);
     const token = tokenData[STORAGE_KEY_ACCESS_TOKEN] || '';
     if (!token) {
-      alert('💰 Para vender necesitas un ML API Access Token válido.\n\nPégalo en Filtros & Config → "ML API Access Token".\n\nConsíguelo en: https://developers.mercadolibre.com.ve/');
+      updateSellStatus('❌ Vender: sin token. Pégalo en Filtros & Config.');
       return;
     }
 
-    // Check if product has been deep-extracted (needs category_id + specs)
-    if (!product.DeepExtracted || !product.Categorias || product.Categorias === 'N/A') {
-      alert('💰 Para vender, primero debes hacer Deep Extraction del producto.\n\nSelecciona el producto con "+ Deep" y haz clic en "Extraer Artículos Seleccionados" para obtener los datos completos (categoría, marca, modelo, especificaciones).');
-      return;
-    }
-
-    // Get markup % (default 20%)
+    // Get markup %
     const markupInput = document.getElementById('cfg-sell-markup');
     const markup = markupInput ? parseFloat(markupInput.value) || 20 : 20;
     const newPrice = Math.ceil(price * (1 + markup / 100));
 
-    // Confirm
-    if (!confirm(`💰 VENDER: Copiar y publicar este producto\n\nProducto: ${title.substring(0, 60)}\nPrecio original: $${price}\nNuevo precio (+${markup}%): $${newPrice}\nCategoría: ${product.Categorias}\nMarca: ${product.Marca}\nModelo: ${product.Modelo}\n\nSe copiará la imagen y se publicará bajo tu cuenta.\n¿Continuar?`)) {
-      return;
-    }
+    updateSellStatus(`💰 Vendiendo ${mlvId}: "${title.substring(0, 30)}" → $${newPrice} (+${markup}%)`);
 
-    logActivity('SELL', `Starting sell flow for ${mlvId}: "${title.substring(0, 40)}" → $${newPrice} (+${markup}%)`, 'info');
+    // Step 1: Auto deep-extract if needed
+    if (!product.DeepExtracted || !product.CategoryId) {
+      updateSellStatus(`💰 ${mlvId}: Extrayendo datos del artículo (deep extraction automático)...`);
+      // Add to deep queue and process just this one item
+      deepQueue.push({ id: product.id, Link: product.Link, Nombre: product.Nombre });
+      await persistDeepQueue();
 
-    // v6.12.2: ML blocks GET /items/{id} with 403 PolicyAgent.
-    // Build the POST payload from our scraped data instead.
-    // We need category_id — extract from breadcrumbs or use the one we stored.
-    // The breadcrumbs look like: "Computación > Impresión > Impresoras"
-    // We can't get the category_id from breadcrumbs alone, so we'll try the
-    // ML search API to find the category, or let the user input it.
+      // Run deep extraction for just this one item
+      const wasDeepCrawling = isDeepCrawling;
+      if (!wasDeepCrawling) {
+        // Temporarily set deepQueue to just this one item
+        const savedQueue = deepQueue.slice();
+        deepQueue.length = 0;
+        deepQueue.push({ id: product.id, Link: product.Link, Nombre: product.Nombre });
+        await runAsyncFetchQueue();
+        // Restore the original queue
+        deepQueue.push(...savedQueue);
+        await persistDeepQueue();
+      }
 
-    // Try to get category_id from the product data
-    let categoryId = product.Categoria || '';
-    // If we only have the category name, we can't post without the ID.
-    // ML requires a valid category_id (like MLV1676) to create a listing.
-    if (!categoryId || categoryId === 'N/A' || categoryId.indexOf(' ') !== -1) {
-      // Category name is not the ID — ask user to provide it
-      const userInput = prompt(
-        `💰 ML requiere un Category ID para publicar.\n\n` +
-        `No pudimos obtenerlo automáticamente porque ML bloqueó la API GET /items/{id}.\n\n` +
-        `Categoría detectada: ${product.Categorias}\n\n` +
-        `Pega el Category ID (ej: MLV1676 para Impresoras).\n` +
-        `Búscalo en: https://developers.mercadolibre.com.ve/es_ar/categorias-y-atributos`
-      );
-      if (!userInput || !userInput.trim()) {
-        logActivity('SELL', `${mlvId}: Cancelled — no category_id provided`, 'warn');
+      // Reload the product from storage to get the extracted data
+      const allData = await sendMessage({ action: 'GET_ALL_DATA' });
+      if (allData && allData.products) {
+        const updated = allData.products.find(p => p.id === product.id || extractMlvId(p.Link) === mlvId);
+        if (updated) {
+          product = updated;  // use the freshly extracted data
+        }
+      }
+
+      if (!product.CategoryId) {
+        updateSellStatus(`❌ ${mlvId}: No se pudo obtener category_id del DOM.`);
+        logActivity('SELL', `${mlvId}: CategoryId not found after deep extraction`, 'error');
         return;
       }
-      categoryId = userInput.trim();
     }
 
-    // Build the POST payload from scraped data
-    // Image: we have product.Imagen (the gallery image URL)
+    updateSellStatus(`💰 ${mlvId}: CategoryId=${product.CategoryId}, obteniendo atributos requeridos...`);
+
+    // Step 2: Fetch required attributes for this category
+    const attrsResponse = await sendMessage({ action: 'FETCH_CATEGORY_ATTRS', categoryId: product.CategoryId });
+    let requiredAttrs = [];
+    if (attrsResponse && attrsResponse.success && Array.isArray(attrsResponse.attributes)) {
+      requiredAttrs = attrsResponse.attributes.filter(a => a.tags && (a.tags.required || a.tags.catalog_required));
+      updateSellStatus(`💰 ${mlvId}: ${requiredAttrs.length} atributos requeridos para ${product.CategoryId}`);
+    }
+
+    // Step 3: Build attributes payload — match scraped data to required attrs
+    let attributes = [];
+    for (const attr of requiredAttrs) {
+      const attrName = (attr.name || '').toLowerCase();
+      const attrId = attr.id;
+
+      // Try to match from our scraped data
+      let valueName = '';
+      if (attrId === 'BRAND' || attrName === 'marca') {
+        valueName = product.Marca && product.Marca !== 'N/A' ? product.Marca : '';
+      } else if (attrId === 'MODEL' || attrName === 'modelo') {
+        valueName = product.Modelo && product.Modelo !== 'N/A' ? product.Modelo : '';
+      } else if (attrId === 'COLOR' || attrName === 'color') {
+        // Try to extract from specs
+        if (product.Especificaciones) {
+          const m = product.Especificaciones.match(/Color:\s*([^|]+)/i);
+          if (m) valueName = m[1].trim();
+        }
+      } else if (attrId === 'VOLTAGE' || attrName === 'voltaje') {
+        if (product.Especificaciones) {
+          const m = product.Especificaciones.match(/Voltaje:\s*([^|]+)/i);
+          if (m) valueName = m[1].trim();
+        }
+      }
+
+      if (valueName) {
+        // Try to match to a valid value ID from the API
+        let valueId = '';
+        if (Array.isArray(attr.values)) {
+          const match = attr.values.find(v => v.name && v.name.toLowerCase() === valueName.toLowerCase());
+          if (match) valueId = match.id;
+        }
+        attributes.push({
+          id: attrId,
+          value_id: valueId || undefined,
+          value_name: valueName
+        });
+        // Clean undefined
+        Object.keys(attributes[attributes.length - 1]).forEach(k => attributes[attributes.length - 1][k] === undefined && delete attributes[attributes.length - 1][k]);
+      }
+    }
+
+    updateSellStatus(`💰 ${mlvId}: ${attributes.length}/${requiredAttrs.length} atributos completados`);
+
+    // Step 4: Build pictures from scraped image
     let pictures = [];
     if (product.Imagen) {
       pictures.push({ source: product.Imagen });
     }
 
-    // Build attributes from scraped Marca/Modelo if available
-    let attributes = [];
-    if (product.Marca && product.Marca !== 'N/A') {
-      attributes.push({ id: 'BRAND', value_name: product.Marca });
-    }
-    if (product.Modelo && product.Modelo !== 'N/A') {
-      attributes.push({ id: 'MODEL', value_name: product.Modelo });
-    }
-
-    // Build the description from scraped specs
+    // Step 5: Build description
     let descriptionText = `SIEMPRE PREGUNTAR DISPONIBILIDAD ANTES DE COMPRAR!!!\n\nOriginal: ${mlvId}\n`;
     if (product.Especificaciones && product.Especificaciones !== 'N/A' && product.Especificaciones.length > 0) {
       descriptionText += `\nEspecificaciones:\n${product.Especificaciones.replace(/\|/g, '\n')}\n`;
@@ -1641,56 +1688,45 @@
       descriptionText += `\nVendedor original: ${product.Vendedor_Nombre}\n`;
     }
 
-    // Build POST payload
+    // Step 6: Build POST payload
     const postData = {
       title: title,
       price: newPrice,
       currency_id: product.Moneda === 'VES' ? 'VES' : 'USD',
-      category_id: categoryId,
+      category_id: product.CategoryId,
       available_quantity: 1,
       buying_mode: 'buy_it_now',
       listing_type_id: 'gold_special',
       condition: 'new',
-      pictures: pictures,
-      attributes: attributes.length > 0 ? attributes : undefined
+      pictures: pictures
     };
+    if (attributes.length > 0) postData.attributes = attributes;
 
-    // Remove undefined fields
-    Object.keys(postData).forEach(k => postData[k] === undefined && delete postData[k]);
-
-    logActivity('SELL', `${mlvId}: Built payload — title="${title.substring(0,30)}", price=${newPrice}, category=${categoryId}, ${pictures.length} pics, ${attributes.length} attrs`, 'info');
-
-    // Step 3: POST /items to create the listing
-    setDebugger(`[Vender ${mlvId}]: Publicando nuevo anuncio ($${newPrice}, cat=${categoryId})...`);
-    logActivity('SELL', `${mlvId}: POSTing new listing...`, 'info');
+    // Step 7: POST /items
+    updateSellStatus(`💰 ${mlvId}: Publicando bajo tu cuenta ($${newPrice})...`);
     const postResponse = await sendMessage({ action: 'POST_ITEM', itemData: postData });
 
     if (!postResponse || !postResponse.success) {
       const errMsg = postResponse && postResponse.error ? postResponse.error : 'sin respuesta';
-      logActivity('SELL', `${mlvId}: POST_ITEM FAILED — ${errMsg}`, 'error');
-      alert(`❌ Error al publicar el producto.\n\nError: ${errMsg}\n\nPosibles causas:\n• Categoría requiere atributos obligatorios (marca, modelo, etc.)\n• Precio fuera del rango permitido para esa categoría\n• Token sin permisos de escritura\n• Límite de publicaciones alcanzado\n• Category ID inválido`);
+      updateSellStatus(`❌ ${mlvId}: Error al publicar — ${errMsg.substring(0, 100)}`);
+      logActivity('SELL', `${mlvId}: POST FAILED — ${errMsg}`, 'error');
       return;
     }
 
     const newItem = postResponse.item;
     const newId = newItem.id;
     const newPermalink = newItem.permalink || `https://articulo.mercadolibre.com.ve/${newId}`;
-    logActivity('SELL', `${mlvId}: POST OK! New listing: ${newId} — ${newPermalink}`, 'info');
 
-    // Step 4: Add description with original seller reference
-    setDebugger(`[Vender ${mlvId}]: Agregando descripción...`);
+    // Step 8: POST description
+    updateSellStatus(`💰 ${mlvId} → ${newId}: Agregando descripción...`);
     const descResponse = await sendMessage({ action: 'POST_ITEM_DESC', itemId: newId, description: descriptionText });
-
     if (descResponse && descResponse.success) {
-      logActivity('SELL', `${mlvId} → ${newId}: Description added`, 'info');
+      updateSellStatus(`✅ ${mlvId} → ${newId}: ¡Publicado! ${newPermalink}`);
     } else {
-      logActivity('SELL', `${newId}: Description failed (non-critical) — ${descResponse ? descResponse.error : 'no response'}`, 'warn');
+      updateSellStatus(`✅ ${mlvId} → ${newId}: Publicado (descripción falló, no crítico)`);
     }
 
-    setDebugger(`[Vender]: ¡Listo! ${newPermalink}`);
-    logActivity('SELL', `✅ Sell complete: ${mlvId} → ${newId} (${newPermalink})`, 'info');
-
-    alert(`✅ ¡Producto publicado!\n\nNuevo ID: ${newId}\nPrecio: $${newPrice}\n\nURL: ${newPermalink}\n\nLa descripción se agregó con referencia al producto original.`);
+    logActivity('SELL', `✅ Sell complete: ${mlvId} → ${newId} (${newPermalink}) — $${newPrice}`, 'info');
   }
 
   function toggleSelectForDeep(product) {
@@ -2274,13 +2310,24 @@
     });
 
     // v6.9.0: extract seller page link from footer button
-    const sellerFooterLinkEl = queryFirst(doc, [
-      '.ui-seller-data-footer__container a',
-      '.ui-seller-data-footer a[href]',
-      'a[href*="/pagina/"]'
-    ]);
+    // v6.13.0: also extract category_id, seller_id, item_id from the link's query params
+    let categoryId = '';
+    let sellerId = '';
     if (sellerFooterLinkEl) {
-      sellerPageLink = cleanPermalink(sellerFooterLinkEl.href || sellerFooterLinkEl.getAttribute('href') || '');
+      const rawHref = sellerFooterLinkEl.href || sellerFooterLinkEl.getAttribute('href') || '';
+      sellerPageLink = cleanPermalink(rawHref);
+      // Extract category_id=MLV1676 from URL params
+      try {
+        const u = new URL(rawHref);
+        categoryId = u.searchParams.get('category_id') || '';
+        sellerId = u.searchParams.get('seller_id') || '';
+      } catch (e) {
+        // Fallback: regex
+        const catMatch = rawHref.match(/category_id=(MLV\d+)/i);
+        if (catMatch) categoryId = catMatch[1];
+        const sellerMatch = rawHref.match(/seller_id=(\d+)/i);
+        if (sellerMatch) sellerId = sellerMatch[1];
+      }
     }
 
     // 8. Seller status + breadcrumbs
@@ -2351,6 +2398,8 @@
       Vendedor_Recomendacion: sellerRecommendPct,  // v6.9.0: parsed number
       Vendedor_AniosML: sellerYearsML,         // v6.9.0: just the number (21)
       Vendedor_Link: sellerPageLink,           // v6.9.0: link to seller's ML store page
+      CategoryId: categoryId,                 // v6.13.0: ML category ID (e.g. MLV1676)
+      SellerId: sellerId,                     // v6.13.0: ML seller ID
       Categorias: Array.from(breadcrumbs).map((b) => (b.innerText || b.textContent || '').trim()).join(' > '),
       Categoria: Array.from(breadcrumbs).length > 0 ? (Array.from(breadcrumbs)[0].innerText || Array.from(breadcrumbs)[0].textContent || '').trim() : 'N/A',  // v6.9.0: level 0
       Subcategorias: Array.from(breadcrumbs).length > 1 ? Array.from(breadcrumbs).slice(1).map((b) => (b.innerText || b.textContent || '').trim()).join(' > ') : 'N/A',  // v6.9.0: rest
