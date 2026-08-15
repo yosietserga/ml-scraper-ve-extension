@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.14.0';
+  const EXT_VERSION = '6.14.1';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -466,6 +466,15 @@
               <option value="score_desc">Mejor Score</option>
             </select>
           </div>
+          <div style="display:flex; gap:6px; margin-bottom:8px;">
+            <select id="filter-seller" style="flex:1; padding:5px; font-size:10px; border:1px solid #ccc; border-radius:4px;" title="Filtrar por vendedor (requiere deep extraction)">
+              <option value="">Todos los vendedores</option>
+            </select>
+            <select id="filter-city" style="flex:1; padding:5px; font-size:10px; border:1px solid #ccc; border-radius:4px;" title="Filtrar por ciudad (requiere deep extraction)">
+              <option value="">Todas las ciudades</option>
+            </select>
+            <button class="ml-btn ml-btn-secondary" id="btn-clear-filters" style="padding:5px 8px; font-size:10px;" title="Limpiar todos los filtros">✕</button>
+          </div>
           <div id="items-container"></div>
         </div>
 
@@ -604,6 +613,20 @@
     if (filterInput) filterInput.addEventListener('input', () => { visibleCount = 50; renderResults(); });
     const sortSel = document.getElementById('sort-results');
     if (sortSel) sortSel.addEventListener('change', () => { visibleCount = 50; renderResults(); });
+
+    // v6.14.1: seller + city filters
+    const sellerSel = document.getElementById('filter-seller');
+    if (sellerSel) sellerSel.addEventListener('change', () => { visibleCount = 50; renderResults(); });
+    const citySel = document.getElementById('filter-city');
+    if (citySel) citySel.addEventListener('change', () => { visibleCount = 50; renderResults(); });
+    const btnClearFilters = document.getElementById('btn-clear-filters');
+    if (btnClearFilters) btnClearFilters.onclick = () => {
+      if (filterInput) filterInput.value = '';
+      if (sellerSel) sellerSel.value = '';
+      if (citySel) citySel.value = '';
+      visibleCount = 50;
+      renderResults();
+    };
 
     // Download buttons (may exist in both tabs)
     document.querySelectorAll('#btn-download').forEach((btn) => {
@@ -1328,14 +1351,74 @@
   /* Render                                                            */
   /* ------------------------------------------------------------------ */
 
+  /** v6.14.1: Populate seller + city dropdowns from existing product data.
+   *  Only includes products that have been deep-extracted (have seller name + city).
+   */
+  function populateFilterDropdowns() {
+    const sellerSel = document.getElementById('filter-seller');
+    const citySel = document.getElementById('filter-city');
+    if (!sellerSel && !citySel) return;
+
+    // Collect unique sellers and cities from deep-extracted products
+    const sellers = new Map(); // name → count
+    const cities = new Map();  // name → count
+
+    for (const p of products) {
+      // Seller: only from deep-extracted products (not 'Pendiente'/'N/A')
+      const sellerName = p.Vendedor_Nombre || '';
+      if (sellerName && sellerName !== 'Pendiente' && sellerName !== 'No especificado' && sellerName !== 'N/A') {
+        sellers.set(sellerName, (sellers.get(sellerName) || 0) + 1);
+      }
+      // City: from Ubicacion (deep-extracted)
+      const city = p.Ubicacion || '';
+      if (city && city !== 'Pendiente' && city !== 'No especificada' && city !== 'N/A') {
+        // Extract just the city name (before the comma if "City, State" format)
+        const cityName = city.split(',')[0].trim();
+        if (cityName) cities.set(cityName, (cities.get(cityName) || 0) + 1);
+      }
+    }
+
+    // Populate seller dropdown (preserve current selection)
+    if (sellerSel) {
+      const currentSeller = sellerSel.value;
+      const sellerOptions = ['<option value="">Todos los vendedores</option>'];
+      // Sort by count descending
+      const sortedSellers = [...sellers.entries()].sort((a, b) => b[1] - a[1]);
+      for (const [name, count] of sortedSellers) {
+        sellerOptions.push(`<option value="${escapeAttr(name)}">${escapeHtml(name)} (${count})</option>`);
+      }
+      sellerSel.innerHTML = sellerOptions.join('');
+      sellerSel.value = currentSeller;
+    }
+
+    // Populate city dropdown (preserve current selection)
+    if (citySel) {
+      const currentCity = citySel.value;
+      const cityOptions = ['<option value="">Todas las ciudades</option>'];
+      const sortedCities = [...cities.entries()].sort((a, b) => b[1] - a[1]);
+      for (const [name, count] of sortedCities) {
+        cityOptions.push(`<option value="${escapeAttr(name)}">${escapeHtml(name)} (${count})</option>`);
+      }
+      citySel.innerHTML = cityOptions.join('');
+      citySel.value = currentCity;
+    }
+  }
+
   function renderResults() {
     if (!modal) return;
     const container = document.getElementById('items-container');
     if (!container) return;
     const filterInput = document.getElementById('filter-name');
     const sortSel = document.getElementById('sort-results');
+    const sellerSel = document.getElementById('filter-seller');
+    const citySel = document.getElementById('filter-city');
     const filterText = (filterInput ? filterInput.value : '').toLowerCase();
     const sortVal = sortSel ? sortSel.value : 'sales_desc';
+    const filterSeller = sellerSel ? sellerSel.value : '';
+    const filterCity = citySel ? citySel.value : '';
+
+    // v6.14.1: populate seller + city dropdowns from product data
+    populateFilterDropdowns();
 
     const tabCount = document.getElementById('tab-count');
     if (tabCount) tabCount.innerText = products.length;
@@ -1350,6 +1433,23 @@
     });
 
     let filtered = products.filter((p) => (p.Nombre || '').toLowerCase().indexOf(filterText) !== -1);
+
+    // v6.14.1: filter by seller (name or ID)
+    if (filterSeller) {
+      filtered = filtered.filter((p) => {
+        const sellerName = (p.Vendedor_Nombre || '').toLowerCase();
+        const sellerId = String(p.SellerId || '');
+        return sellerName === filterSeller.toLowerCase() || sellerId === filterSeller;
+      });
+    }
+
+    // v6.14.1: filter by city
+    if (filterCity) {
+      filtered = filtered.filter((p) => {
+        const ubic = (p.Ubicacion || '').toLowerCase();
+        return ubic.indexOf(filterCity.toLowerCase()) !== -1;
+      });
+    }
 
     if (sortVal === 'price_asc') filtered.sort((a, b) => (a.Precio_Numerico || 0) - (b.Precio_Numerico || 0));
     else if (sortVal === 'price_desc') filtered.sort((a, b) => (b.Precio_Numerico || 0) - (a.Precio_Numerico || 0));
