@@ -52,11 +52,36 @@ var HEADERS = [
 ];
 
 /**
- * Handles GET requests — returns current status + row count.
- * Used by the extension to test the connection.
+ * Handles GET requests.
+ * ?action=data → returns all rows as JSON array (for the Next.js webapp)
+ * (no params) → returns connection status
  */
 function doGet(e) {
   try {
+    var action = e && e.parameter && e.parameter.action ? e.parameter.action : '';
+
+    if (action === 'data') {
+      // Return all product data as JSON array — for the Next.js webapp
+      var sheet = getSheet();
+      var lastRow = sheet.getLastRow();
+      var lastCol = sheet.getLastColumn();
+      if (lastRow < 2) {
+        return jsonOut({ success: true, products: [], count: 0 });
+      }
+      var values = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+      var products = [];
+      for (var i = 0; i < values.length; i++) {
+        var row = values[i];
+        var obj = {};
+        for (var j = 0; j < HEADERS.length && j < row.length; j++) {
+          obj[HEADERS[j]] = row[j];
+        }
+        products.push(obj);
+      }
+      return jsonOut({ success: true, products: products, count: products.length });
+    }
+
+    // Default: connection status
     var sheet = getSheet();
     var lastRow = sheet.getLastRow();
     return jsonOut({
