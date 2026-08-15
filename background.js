@@ -498,6 +498,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // v6.10.0: Sync to Google Sheets — routed through background SW
     // because content scripts hit CORS errors when POSTing to script.google.com.
     // The background SW has host_permissions and is not subject to CORS.
+    // v6.11.1: detect HTML response (Google login/error page) + retry.
     case 'SYNC_TO_SHEETS': {
       (async () => {
         try {
@@ -513,20 +514,64 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({ success: false, error: 'No hay productos para sincronizar.' });
             return;
           }
-          // POST to the Apps Script web app.
-          // Use no-cors mode as fallback if the regular fetch fails (Apps Script
-          // sometimes doesn't return proper CORS headers for POST).
-          const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-            body: JSON.stringify({ action: 'sync', products: products })
-          });
-          if (!response.ok) {
-            sendResponse({ success: false, error: 'HTTP ' + response.status + ' ' + response.statusText });
+
+          // Helper: do the POST, return {ok, json, text, status}
+          async function doSync(attempt) {
+            const response = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+              body: JSON.stringify({ action: 'sync', products: products })
+            });
+            const text = await response.text();
+            // v6.11.1: detect HTML response (Google login/consent/error page)
+            const trimmed = text.trim();
+            const isHTML = trimmed.startsWith('<') || trimmed.startsWith('<!DOCTYPE') ||
+                           trimmed.indexOf('<html') !== -1 || trimmed.indexOf('<HTML') !== -1;
+            if (isHTML) {
+              return {
+                ok: false,
+                error: 'Google devolvió HTML en vez de JSON. Esto pasa cuando:\n' +
+                       '• La implementación del Apps Script expiró\n' +
+                       '• Necesitas re-autorizar el script\n' +
+                       '• La sesión de Google caducó\n\n' +
+                       'Solución:\n' +
+                       '1. Abre tu Google Sheet\n' +
+                       '2. Extensiones → Apps Script\n' +
+                       '3. Implementar → Gestionar implementaciones\n' +
+                       '4. Edita la implementación → nueva versión\n' +
+                       '5. Vuelve a autorizar los permisos\n' +
+                       '6. Copia la nueva URL si cambió',
+                status: response.status,
+                isHTML: true
+              };
+            }
+            // Try to parse as JSON
+            let json;
+            try {
+              json = JSON.parse(trimmed);
+            } catch (parseErr) {
+              return {
+                ok: false,
+                error: 'Respuesta no es JSON válido: ' + trimmed.substring(0, 100),
+                status: response.status
+              };
+            }
+            return { ok: response.ok, json, status: response.status };
+          }
+
+          // First attempt
+          let result = await doSync(1);
+          // v6.11.1: retry once after 2s if HTML or 5xx
+          if (!result.ok && (result.isHTML || (result.status && result.status >= 500))) {
+            await new Promise(r => setTimeout(r, 2000));
+            result = await doSync(2);
+          }
+
+          if (!result.ok) {
+            sendResponse({ success: false, error: result.error || ('HTTP ' + result.status) });
             return;
           }
-          const result = await response.json();
-          sendResponse(result);
+          sendResponse(result.json);
         } catch (err) {
           sendResponse({ success: false, error: err && err.message ? err.message : String(err) });
         }
