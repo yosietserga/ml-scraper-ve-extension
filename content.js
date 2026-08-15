@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.13.2';
+  const EXT_VERSION = '6.13.3';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -1700,7 +1700,29 @@
         if (valueId) attrObj.value_id = valueId;
         attributes.push(attrObj);
       } else {
-        missingAttrs.push(`${attrId} (${attr.name})`);
+        // v6.13.3: For SIZE/size attributes — if the original product uses
+        // variations (e.g. clothing with sizes), the SIZE attribute might not
+        // be in the main attributes but in variation_combinations.
+        // Use the first available size from the API's valid values.
+        if (attrId === 'SIZE' || attrName === 'talla' || attrName === 'size') {
+          if (Array.isArray(attr.values) && attr.values.length > 0) {
+            // Use the first valid size (usually "S" or "Universal")
+            const firstSize = attr.values[0];
+            valueName = firstSize.name || '';
+            valueId = firstSize.id || '';
+            const attrObj = { id: attrId, value_name: valueName };
+            if (valueId) attrObj.value_id = valueId;
+            attributes.push(attrObj);
+            updateSellStatus(`💰 ${mlvId}: SIZE auto-filled with "${valueName}" (first available)`);
+          } else {
+            // No values available — use "Universal" as fallback
+            const attrObj = { id: attrId, value_name: 'Universal' };
+            attributes.push(attrObj);
+            updateSellStatus(`💰 ${mlvId}: SIZE auto-filled with "Universal" (fallback)`);
+          }
+        } else {
+          missingAttrs.push(`${attrId} (${attr.name})`);
+        }
       }
     }
 
@@ -1723,9 +1745,16 @@
       descriptionText += `\nVendedor original: ${product.Vendedor_Nombre}\n`;
     }
 
+    // v6.13.3: Truncate title to 60 chars (ML limit for some categories)
+    let finalTitle = title;
+    if (finalTitle.length > 60) {
+      finalTitle = finalTitle.substring(0, 57).trim() + '...';
+      updateSellStatus(`💰 ${mlvId}: Título truncado a 60 chars: "${finalTitle.substring(0, 40)}..."`);
+    }
+
     // Step 6: Build POST payload
     const postData = {
-      title: title,
+      title: finalTitle,
       price: newPrice,
       currency_id: product.Moneda === 'VES' ? 'VES' : 'USD',
       category_id: product.CategoryId,
