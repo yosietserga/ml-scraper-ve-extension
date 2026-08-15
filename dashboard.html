@@ -8,165 +8,428 @@
   <link rel="icon" href="icons/icon48.png" />
 </head>
 <body>
+  <!-- ===== Topbar ===== -->
   <header class="topbar">
     <div class="topbar-left">
-      <img src="icons/icon48.png" alt="ML" class="topbar-logo" />
+      <img src="icons/icon48.png" alt="ML Scraper" class="topbar-logo" />
       <div>
         <h1>ML Management Dashboard</h1>
-        <p class="subtitle">MercadoLibre VE · Publicaciones · Métricas · Tendencias · Configuración</p>
+        <p class="subtitle">MercadoLibre VE · Publicaciones · Inteligencia · Configuración</p>
       </div>
     </div>
     <div class="topbar-right">
-      <button id="btn-refresh" class="btn btn-secondary">↻ Refrescar</button>
-      <button id="btn-sync-sheets" class="btn btn-success">📤 Sync Sheets</button>
-      <button id="btn-open-scraper" class="btn btn-primary" title="Ir a MercadoLibre">🛒 Ir a ML</button>
+      <button id="btn-refresh" class="btn btn-ghost" title="Recargar datos desde chrome.storage">
+        <span class="ic">↻</span> Refrescar
+      </button>
+      <button id="btn-sync-sheets" class="btn btn-success" title="Sincronizar con Google Sheets">
+        <span class="ic">📤</span> Sync Sheets
+      </button>
+      <button id="btn-export-csv" class="btn btn-yellow" title="Exportar todos los productos a CSV">
+        <span class="ic">📥</span> CSV
+      </button>
+      <button id="btn-clear-data" class="btn btn-danger" title="Borrar todos los productos">
+        <span class="ic">🗑</span> Limpiar
+      </button>
+      <button id="btn-open-scraper" class="btn btn-primary" title="Ir a MercadoLibre VE">
+        <span class="ic">🛒</span> Ir a ML
+      </button>
     </div>
   </header>
 
-  <nav class="sidebar">
-    <a class="nav-item active" data-tab="overview">📊 Resumen</a>
-    <a class="nav-item" data-tab="publications">📦 Publicaciones</a>
-    <a class="nav-item" data-tab="metrics">📈 Métricas</a>
-    <a class="nav-item" data-tab="trends">🔮 Tendencias</a>
-    <a class="nav-item" data-tab="config">⚙️ Configuración</a>
-    <a class="nav-item" data-tab="integrations">🔌 Integraciones</a>
-  </nav>
+  <div class="layout">
+    <!-- ===== Sidebar ===== -->
+    <nav class="sidebar" aria-label="Navegación principal">
+      <a class="nav-item active" data-tab="overview" title="Resumen general">
+        <span class="nav-ic">📊</span><span class="nav-lbl">Resumen</span>
+      </a>
+      <a class="nav-item" data-tab="publications" title="Publicaciones y filtros">
+        <span class="nav-ic">📦</span><span class="nav-lbl">Publicaciones</span>
+      </a>
+      <a class="nav-item" data-tab="sellers" title="Análisis de vendedores">
+        <span class="nav-ic">🏪</span><span class="nav-lbl">Vendedores</span>
+      </a>
+      <a class="nav-item" data-tab="categories" title="Análisis por categoría">
+        <span class="nav-ic">🗂️</span><span class="nav-lbl">Categorías</span>
+      </a>
+      <a class="nav-item" data-tab="opportunities" title="Oportunidades A1">
+        <span class="nav-ic">🎯</span><span class="nav-lbl">Oportunidades</span>
+      </a>
+      <a class="nav-item" data-tab="tools" title="Calculadoras y herramientas">
+        <span class="nav-ic">🛠️</span><span class="nav-lbl">Herramientas</span>
+      </a>
+      <a class="nav-item" data-tab="trends" title="Tendencias y proyecciones">
+        <span class="nav-ic">🔮</span><span class="nav-lbl">Tendencias</span>
+      </a>
+      <a class="nav-item" data-tab="integrations" title="Sheets, Webhooks, ML API">
+        <span class="nav-ic">🔌</span><span class="nav-lbl">Integraciones</span>
+      </a>
+      <a class="nav-item" data-tab="config" title="Configuración general">
+        <span class="nav-ic">⚙️</span><span class="nav-lbl">Configuración</span>
+      </a>
+    </nav>
 
-  <main class="content">
-    <div id="loading" class="loading"><div class="spinner"></div><p>Cargando dashboard…</p></div>
+    <!-- ===== Main Content ===== -->
+    <main class="content">
+      <div id="loading" class="loading">
+        <div class="spinner"></div>
+        <p>Cargando dashboard…</p>
+      </div>
 
-    <!-- Tab: Overview -->
-    <section id="tab-overview" class="tab-panel active" style="display:none;">
-      <div class="stats-grid" id="overview-stats"></div>
-      <div class="card-row">
-        <div class="card half">
-          <h2>🏆 Top 10 Productos por Ventas</h2>
-          <div id="overview-top-sales"></div>
+      <!-- ========== OVERVIEW ========== -->
+      <section id="tab-overview" class="tab-panel active" style="display:none;">
+        <div class="page-head">
+          <h2>📊 Resumen General</h2>
+          <p class="page-sub">Visión global del mercado crawleado</p>
         </div>
-        <div class="card half">
-          <h2>👁 Top 10 por Visitas</h2>
-          <div id="overview-top-visits"></div>
-        </div>
-      </div>
-      <div class="card-row">
-        <div class="card half">
-          <h2>🏪 Top Vendedores</h2>
-          <div id="overview-top-sellers"></div>
-        </div>
-        <div class="card half">
-          <h2>📍 Distribución por Ciudad</h2>
-          <div id="overview-cities"></div>
-        </div>
-      </div>
-      <div class="card-row">
-        <div class="card full">
-          <h2>💰 Distribución de Precios</h2>
-          <div id="overview-price-dist"></div>
-        </div>
-      </div>
-    </section>
+        <div class="stats-grid" id="overview-stats"></div>
 
-    <!-- Tab: Publications -->
-    <section id="tab-publications" class="tab-panel" style="display:none;">
-      <div class="card">
-        <h2>📦 Publicaciones Creadas (Vender)</h2>
-        <p class="hint">Productos copiados y publicados bajo tu cuenta con el botón Vender.</p>
-        <div id="publications-list"></div>
-      </div>
-      <div class="card">
-        <h2>📋 Todos los Productos Crawleados</h2>
-        <div style="display:flex; gap:8px; margin-bottom:12px;">
-          <input type="text" id="pub-filter" placeholder="Filtrar por nombre…" style="flex:1; padding:8px; border:1px solid #ccc; border-radius:6px;">
-          <select id="pub-sort" style="padding:8px; border:1px solid #ccc; border-radius:6px;">
-            <option value="sales_desc">Más Vendidos</option>
-            <option value="visits_desc">Más Visitas</option>
-            <option value="price_desc">Precio: Mayor</option>
-            <option value="price_asc">Precio: Menor</option>
-            <option value="score_desc">Mejor Score</option>
-          </select>
+        <div class="card-row">
+          <div class="card half">
+            <div class="card-head"><h3>🏆 Top 10 Productos por Ventas</h3></div>
+            <div id="overview-top-sales" class="card-body"></div>
+            <p class="hint">Productos ordenados por número de ventas estimadas. Pasa el ratón sobre cada fila para ver detalles completos.</p>
+          </div>
+          <div class="card half">
+            <div class="card-head"><h3>👁 Top 10 por Visitas</h3></div>
+            <div id="overview-top-visits" class="card-body"></div>
+            <p class="hint">Productos con mayor tráfico — buena señal de demanda latente.</p>
+          </div>
         </div>
-        <div id="all-products-list"></div>
-      </div>
-    </section>
 
-    <!-- Tab: Metrics -->
-    <section id="tab-metrics" class="tab-panel" style="display:none;">
-      <div class="stats-grid" id="metrics-stats"></div>
-      <div class="card-row">
-        <div class="card full">
-          <h2>📊 Métricas de Demanda</h2>
-          <div id="metrics-demand"></div>
+        <div class="card-row">
+          <div class="card half">
+            <div class="card-head"><h3>🏪 Top Vendedores</h3></div>
+            <div id="overview-top-sellers" class="card-body"></div>
+            <p class="hint">Distribución de productos por vendedor. Click en el nombre para abrir su tienda.</p>
+          </div>
+          <div class="card half">
+            <div class="card-head"><h3>📍 Distribución por Ciudad</h3></div>
+            <div id="overview-cities" class="card-body"></div>
+            <p class="hint">Origen geográfico de los vendedores (deep-extracted).</p>
+          </div>
         </div>
-      </div>
-      <div class="card-row">
-        <div class="card half">
-          <h2>⭐ Distribución de Scores</h2>
-          <div id="metrics-scores"></div>
+
+        <div class="card-row">
+          <div class="card full">
+            <div class="card-head"><h3>💰 Distribución de Precios</h3></div>
+            <div id="overview-price-dist" class="card-body"></div>
+            <p class="hint">Histograma de precios en USD. Te ayuda a identificar rangos competitivos.</p>
+          </div>
         </div>
-        <div class="card half">
-          <h2>📦 Distribución por Categoría</h2>
-          <div id="metrics-categories"></div>
+      </section>
+
+      <!-- ========== PUBLICATIONS ========== -->
+      <section id="tab-publications" class="tab-panel" style="display:none;">
+        <div class="page-head">
+          <h2>📦 Publicaciones</h2>
+          <p class="page-sub">Todos los productos crawleados y los publicados con Vender</p>
         </div>
-      </div>
-      <div class="card-row">
-        <div class="card full">
+
+        <!-- Published Products Manager -->
+        <div class="card">
+          <div class="card-head">
+            <h3>📤 Publicados (Vender) <span class="badge" id="pub-count-badge">0</span></h3>
+            <div class="card-actions">
+              <button id="btn-export-published" class="btn btn-ghost btn-sm">📥 Exportar CSV</button>
+              <button id="btn-clear-published" class="btn btn-danger btn-sm">🗑 Limpiar Todos</button>
+            </div>
+          </div>
+          <p class="hint">Productos que has clonado y publicado bajo tu cuenta. Puedes eliminar individualmente.</p>
+          <div id="publications-list" class="card-body"></div>
+        </div>
+
+        <!-- All crawled products with filters -->
+        <div class="card">
+          <div class="card-head">
+            <h3>📋 Todos los Productos Crawleados <span class="badge" id="all-count-badge">0</span></h3>
+            <div class="card-actions">
+              <button id="btn-export-filtered" class="btn btn-ghost btn-sm">📥 Exportar Filtrados</button>
+            </div>
+          </div>
+
+          <!-- Filters -->
+          <div class="filters-bar">
+            <div class="filter-item">
+              <label for="pub-filter">🔍 Nombre</label>
+              <input type="text" id="pub-filter" placeholder="Filtrar por nombre…" />
+            </div>
+            <div class="filter-item">
+              <label for="pub-filter-seller">🏪 Vendedor</label>
+              <select id="pub-filter-seller"><option value="">Todos</option></select>
+            </div>
+            <div class="filter-item">
+              <label for="pub-filter-city">📍 Ciudad</label>
+              <select id="pub-filter-city"><option value="">Todas</option></select>
+            </div>
+            <div class="filter-item">
+              <label for="pub-filter-cat">🗂️ Categoría</label>
+              <select id="pub-filter-cat"><option value="">Todas</option></select>
+            </div>
+            <div class="filter-item">
+              <label for="pub-sort">⇅ Orden</label>
+              <select id="pub-sort">
+                <option value="sales_desc">Más Vendidos</option>
+                <option value="visits_desc">Más Visitas</option>
+                <option value="price_desc">Precio: Mayor</option>
+                <option value="price_asc">Precio: Menor</option>
+                <option value="score_desc">Mejor Score</option>
+                <option value="opinions_desc">Más Opiniones</option>
+                <option value="seller_products_desc">Vendedor + Productos</option>
+              </select>
+            </div>
+            <button id="btn-clear-filters" class="btn btn-ghost btn-sm">✕ Limpiar Filtros</button>
+          </div>
+
+          <div id="all-products-list" class="card-body"></div>
+          <div id="all-products-pagination" class="pagination"></div>
+        </div>
+      </section>
+
+      <!-- ========== SELLERS ========== -->
+      <section id="tab-sellers" class="tab-panel" style="display:none;">
+        <div class="page-head">
           <h2>🏪 Análisis de Vendedores</h2>
-          <div id="metrics-sellers"></div>
+          <p class="page-sub">Competidores, reputación, concentración y OSINT</p>
         </div>
-      </div>
-    </section>
 
-    <!-- Tab: Trends -->
-    <section id="tab-trends" class="tab-panel" style="display:none;">
-      <div class="card">
-        <h2>🔮 Análisis de Tendencias y Proyecciones</h2>
-        <p class="hint">Proyecciones basadas en visitas, ventas y scores de los productos crawleados.</p>
+        <!-- Concentration Warning -->
+        <div id="seller-concentration-warning"></div>
+
+        <div class="stats-grid" id="sellers-stats"></div>
+
+        <!-- Competitor analysis table -->
+        <div class="card">
+          <div class="card-head"><h3>📊 Análisis de Competidores</h3></div>
+          <p class="hint">Para cada vendedor: productos, ventas, ticket promedio, market share, score. Click en el nombre para abrir su tienda ML.</p>
+          <div id="sellers-table" class="card-body table-wrap"></div>
+        </div>
+
+        <!-- Reputation comparison -->
+        <div class="card">
+          <div class="card-head"><h3>⚖️ Comparación de Reputación (Top 5)</h3></div>
+          <p class="hint">Comparación lado a lado de los 5 vendedores con más productos. Métricas: estatus, seguidores, años en ML, recomendación, ventas.</p>
+          <div id="sellers-compare" class="card-body"></div>
+        </div>
+
+        <!-- OSINT -->
+        <div class="card">
+          <div class="card-head"><h3>🔍 OSINT — Inteligencia de Vendedores</h3></div>
+          <p class="hint">Para cada vendedor, botones directos a: Google breakout (búsqueda de contactos), tienda ML. Útil para encontrar proveedores o datos de contacto.</p>
+          <div id="sellers-osint" class="card-body"></div>
+        </div>
+      </section>
+
+      <!-- ========== CATEGORIES ========== -->
+      <section id="tab-categories" class="tab-panel" style="display:none;">
+        <div class="page-head">
+          <h2>🗂️ Análisis por Categoría</h2>
+          <p class="page-sub">Demanda, saturación, oportunidades y drill-down</p>
+        </div>
+
+        <div class="stats-grid" id="categories-stats"></div>
+
+        <div class="card-row">
+          <div class="card half">
+            <div class="card-head"><h3>🌊 Niche Discovery (Blue Oceans)</h3></div>
+            <p class="hint">Categorías con alta demanda (ventas) pero pocos vendedores. Click para ver detalles.</p>
+            <div id="cat-blue-oceans" class="card-body"></div>
+          </div>
+          <div class="card half">
+            <div class="card-head"><h3>🧮 Market Saturation Index</h3></div>
+            <p class="hint">Productos por vendedor. Índice alto = saturado. Índice bajo = oportunidad.</p>
+            <div id="cat-saturation" class="card-body"></div>
+          </div>
+        </div>
+
+        <div class="card-row">
+          <div class="card full">
+            <div class="card-head"><h3>💎 Category Opportunity Score</h3></div>
+            <p class="hint">Fórmula ponderada: demanda (40%) + openness (25%) + score (15%) + precio razonable (10%) + visits/sales ratio (10%). Click en una categoría para drill-down.</p>
+            <div id="cat-opportunity" class="card-body"></div>
+          </div>
+        </div>
+
+        <div class="card-row">
+          <div class="card full">
+            <div class="card-head"><h3>🔥 Demand Heatmap</h3></div>
+            <p class="hint">Ratio visitas→ventas por categoría. Verde = alta conversión, Rojo = demanda latente sin conversión.</p>
+            <div id="cat-heatmap" class="card-body"></div>
+          </div>
+        </div>
+
+        <!-- Category Deep Dive -->
+        <div class="card">
+          <div class="card-head">
+            <h3>🔎 Category Deep Dive</h3>
+            <select id="cat-deep-select" class="select-inline"><option value="">Selecciona categoría…</option></select>
+          </div>
+          <p class="hint">Métricas completas de la categoría seleccionada: precio min/max/avg/mediana/std, productos, vendedores, ventas, conversión.</p>
+          <div id="cat-deep-content" class="card-body"></div>
+        </div>
+      </section>
+
+      <!-- ========== OPPORTUNITIES ========== -->
+      <section id="tab-opportunities" class="tab-panel" style="display:none;">
+        <div class="page-head">
+          <h2>🎯 Oportunidades A1</h2>
+          <p class="page-sub">Ranking algorítmico de los mejores productos para vender</p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>🏆 Top 20 Oportunidades (Score 0–100)</h3>
+            <div class="card-actions">
+              <button id="btn-export-a1" class="btn btn-ghost btn-sm">📥 CSV</button>
+            </div>
+          </div>
+          <p class="hint">Fórmula: 35% demanda + 15% calidad (score) + 25% apertura de mercado + 15% precio razonable + 10% hotness de categoría.</p>
+          <div id="a1-list" class="card-body"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>💡 Demanda Latente</h3></div>
+          <p class="hint">Productos con muchas visitas pero baja conversión. Oportunidad de copiar y mejorar el listing.</p>
+          <div id="latent-demand" class="card-body"></div>
+        </div>
+      </section>
+
+      <!-- ========== TOOLS ========== -->
+      <section id="tab-tools" class="tab-panel" style="display:none;">
+        <div class="page-head">
+          <h2>🛠️ Herramientas</h2>
+          <p class="page-sub">Calculadoras, comparadores y detectores</p>
+        </div>
+
+        <!-- Profit Calculator -->
+        <div class="card">
+          <div class="card-head"><h3>💵 Profit Calculator</h3></div>
+          <p class="hint">Ingresa tu costo y te mostramos el profit a distintos markups. Markup por defecto viene de tu configuración.</p>
+          <div id="profit-calc" class="card-body"></div>
+        </div>
+
+        <!-- Price Comparison -->
+        <div class="card">
+          <div class="card-head">
+            <h3>📊 Price Comparison por Categoría</h3>
+            <select id="price-comp-select" class="select-inline"><option value="">Selecciona categoría…</option></select>
+          </div>
+          <p class="hint">Dentro de la categoría seleccionada: rango de precios, promedio, mediana, desviación estándar, coeficiente de variación.</p>
+          <div id="price-comp-content" class="card-body"></div>
+        </div>
+
+        <!-- Duplicate Detector -->
+        <div class="card">
+          <div class="card-head"><h3>🔁 Duplicate Detector</h3></div>
+          <p class="hint">Productos con títulos similares ofrecidos por distintos vendedores. Útil para detectar dropshippers y wholesalers.</p>
+          <div id="dup-detector" class="card-body"></div>
+        </div>
+
+        <!-- Price Drop Monitor -->
+        <div class="card">
+          <div class="card-head"><h3>📉 Price Drop Monitor <span class="tag">BETA</span></h3></div>
+          <p class="hint">Funcionalidad futura. Cuando se implemente crawling periódico, aquí verás productos cuyo precio bajó entre crawls.</p>
+          <div id="price-drop" class="card-body">
+            <div class="empty-state">
+              <div class="empty-ic">⏳</div>
+              <p>Price Drop Monitor se activará cuando habilites crawling automático programado.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== TRENDS ========== -->
+      <section id="tab-trends" class="tab-panel" style="display:none;">
+        <div class="page-head">
+          <h2>🔮 Tendencias y Proyecciones</h2>
+          <p class="page-sub">Proyecciones, riesgos, elasticidad y benchmark</p>
+        </div>
+
         <div id="trends-content"></div>
-      </div>
-      <div class="card">
-        <h2>🎯 Oportunidades Detectadas (Algoritmo)</h2>
-        <div id="trends-opportunities"></div>
-      </div>
-      <div class="card">
-        <h2>⚠️ Riesgos y Alertas</h2>
-        <div id="trends-risks"></div>
-      </div>
-    </section>
 
-    <!-- Tab: Config -->
-    <section id="tab-config" class="tab-panel" style="display:none;">
-      <div class="card">
-        <h2>⚙️ Configuración General</h2>
-        <div class="config-grid" id="config-general"></div>
-      </div>
-      <div class="card">
-        <h2>💰 Configuración de Venta</h2>
-        <div class="config-grid" id="config-sell"></div>
-      </div>
-      <div class="card">
-        <h2>🚀 Automatización</h2>
-        <div class="config-grid" id="config-automation"></div>
-      </div>
-    </section>
+        <div class="card-row">
+          <div class="card half">
+            <div class="card-head"><h3>🕐 Best Time to Publish</h3></div>
+            <p class="hint">Estimación basada en cuándo se publicaron más productos que hoy son top-ventas.</p>
+            <div id="best-time" class="card-body"></div>
+          </div>
+          <div class="card half">
+            <div class="card-head"><h3>📈 Price Elasticity</h3></div>
+            <p class="hint">Correlación precio↔ventas. Negativa = precio bajo vende más. Positiva = productos premium venden más.</p>
+            <div id="price-elasticity" class="card-body"></div>
+          </div>
+        </div>
 
-    <!-- Tab: Integrations -->
-    <section id="tab-integrations" class="tab-panel" style="display:none;">
-      <div class="card">
-        <h2>🔌 Google Sheets</h2>
-        <div class="config-grid" id="integration-sheets"></div>
-      </div>
-      <div class="card">
-        <h2>🔗 Webhooks</h2>
-        <p class="hint">Configura webhooks para enviar datos a servicios externos (Zapier, Make, Slack, Telegram, etc.)</p>
-        <div id="webhooks-list"></div>
-        <button class="btn btn-primary" id="btn-add-webhook" style="margin-top:12px;">+ Agregar Webhook</button>
-      </div>
-      <div class="card">
-        <h2>📱 ML API</h2>
-        <div class="config-grid" id="integration-api"></div>
-      </div>
-    </section>
-  </main>
+        <div class="card">
+          <div class="card-head"><h3>🎯 Conversion Rate Benchmark</h3></div>
+          <p class="hint">Compara la conversión de cada producto vs el promedio de su categoría. Los que están por encima del promedio son benchmarks.</p>
+          <div id="conv-benchmark" class="card-body"></div>
+        </div>
+      </section>
+
+      <!-- ========== INTEGRATIONS ========== -->
+      <section id="tab-integrations" class="tab-panel" style="display:none;">
+        <div class="page-head">
+          <h2>🔌 Integraciones</h2>
+          <p class="page-sub">Google Sheets, Webhooks, ML API</p>
+        </div>
+
+        <!-- Google Sheets -->
+        <div class="card">
+          <div class="card-head"><h3>📊 Google Sheets</h3></div>
+          <p class="hint">Sincroniza tus productos con una hoja de cálculo vía Google Apps Script.</p>
+          <div class="config-grid" id="integration-sheets"></div>
+        </div>
+
+        <!-- Webhooks -->
+        <div class="card">
+          <div class="card-head">
+            <h3>🔗 Webhooks</h3>
+            <button id="btn-add-webhook" class="btn btn-primary btn-sm">+ Agregar</button>
+          </div>
+          <p class="hint">Envía eventos a Zapier, Make, Slack, Telegram u otros servicios cuando algo ocurra.</p>
+          <div id="webhooks-list" class="card-body"></div>
+        </div>
+
+        <!-- Webhook Documentation -->
+        <div class="card">
+          <div class="card-head"><h3>📚 Webhook Documentation</h3></div>
+          <p class="hint">Eventos disponibles, payloads de ejemplo y guía de configuración.</p>
+          <div id="webhook-docs" class="card-body"></div>
+        </div>
+
+        <!-- ML API -->
+        <div class="card">
+          <div class="card-head"><h3>📱 MercadoLibre API</h3></div>
+          <p class="hint">Token requerido para Vender y para leer visitas vía API.</p>
+          <div class="config-grid" id="integration-api"></div>
+        </div>
+      </section>
+
+      <!-- ========== CONFIG ========== -->
+      <section id="tab-config" class="tab-panel" style="display:none;">
+        <div class="page-head">
+          <h2>⚙️ Configuración</h2>
+          <p class="page-sub">General, venta y automatización</p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>⚙️ Configuración General</h3></div>
+          <div class="config-grid" id="config-general"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>💰 Configuración de Venta</h3></div>
+          <div class="config-grid" id="config-sell"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>🚀 Automatización</h3></div>
+          <div class="config-grid" id="config-automation"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast"></div>
 
   <script src="dashboard.js"></script>
 </body>
