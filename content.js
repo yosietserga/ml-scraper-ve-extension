@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.11.1';
+  const EXT_VERSION = '6.12.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -498,12 +498,17 @@
             <input type="number" id="cfg-max-products" value="0">
           </div>
           <div class="ml-input-group">
-            <label>ML API Access Token (opcional, para visitas):</label>
+            <label>ML API Access Token (para visitas + vender):</label>
             <div style="display:flex; gap:4px;">
               <input type="password" id="cfg-access-token" placeholder="APP_USR-...-...-..." style="flex:1; font-size:10px;">
               <button class="ml-btn ml-btn-secondary" id="btn-toggle-token" title="Mostrar / Ocultar token" style="padding:4px 8px; font-size:11px;">👁</button>
             </div>
-            <div style="font-size:9px; color:#888; margin-top:3px;">Pega tu token de ML para obtener visitas reales. Sin token, la API pública funciona pero con límites más bajos.</div>
+            <div style="font-size:9px; color:#888; margin-top:3px;">Requerido para el botón 💰 Vender. Consíguelo en: https://developers.mercadolibre.com.ve/</div>
+          </div>
+          <div class="ml-input-group">
+            <label>Precio Markup para Vender (%):</label>
+            <input type="number" id="cfg-sell-markup" value="20" step="5" style="width:80px; font-size:11px;">
+            <div style="font-size:9px; color:#888; margin-top:3px;">Markup aplicado al precio original al copiar productos (20% = +20%). Ej: $10 → $12.</div>
           </div>
           <div class="ml-input-group">
             <label>Google Sheets Web App URL (para sync automático):</label>
@@ -1393,6 +1398,7 @@
         </div>
         <div style="display:flex; gap:4px; align-items:center;">
           <button class="ml-btn select-deep-btn" style="padding:4px 6px; font-size:10px; background:${isSelected ? '#2d3277' : '#e0e0e0'}; color:${isSelected ? '#fff' : '#333'};">+ Deep</button>
+          <button class="ml-btn sell-btn" style="padding:4px 6px; font-size:10px; background:#00a650; color:#fff;" title="Vender: copiar y publicar bajo tu cuenta">💰 Vender</button>
           <a href="${link}" target="_blank" rel="noopener" class="ml-btn ml-btn-secondary" style="padding:4px 6px;" title="Ver Producto">🔗</a>
           <button class="ml-btn ml-btn-danger remove-btn" style="padding:4px 6px;" title="Eliminar">${ICONS.trash}</button>
         </div>
@@ -1450,6 +1456,12 @@
         e.preventDefault();
         e.stopPropagation();
         toggleSelectForDeep(p);
+      };
+
+      card.querySelector('.sell-btn').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        sellProduct(p);
       };
 
       card.querySelector('.remove-btn').onclick = (e) => {
@@ -1531,6 +1543,123 @@
         renderResults();
       });
     }, 350);
+  }
+
+  /** v6.12.0: Sell — copies a product and publishes it under the user's ML account.
+   *  Based on the user's original Node.js code:
+   *    1. FETCH_FULL_ITEM (GET /items/{id}?include_attributes=all + description)
+   *    2. Build POST payload (title, price * markup, pictures, variations, etc.)
+   *    3. POST_ITEM (POST /items → create new listing)
+   *    4. POST_ITEM_DESC (add description with original seller reference)
+   *  Requires a valid ML access token in Filtros & Config.
+   */
+  async function sellProduct(product) {
+    const mlvId = extractMlvId(product.Link) || product.id;
+    const title = product.Nombre || '(sin título)';
+    const price = product.Precio_Numerico || 0;
+
+    // Check token first
+    const tokenData = await chrome.storage.local.get(STORAGE_KEY_ACCESS_TOKEN);
+    const token = tokenData[STORAGE_KEY_ACCESS_TOKEN] || '';
+    if (!token) {
+      alert('💰 Para vender necesitas un ML API Access Token válido.\n\nPégalo en Filtros & Config → "ML API Access Token".\n\nConsíguelo en: https://developers.mercadolibre.com.ve/');
+      return;
+    }
+
+    // Get markup % (default 20%)
+    const markupInput = document.getElementById('cfg-sell-markup');
+    const markup = markupInput ? parseFloat(markupInput.value) || 20 : 20;
+    const newPrice = Math.ceil(price * (1 + markup / 100));
+
+    // Confirm
+    if (!confirm(`💰 VENDER: Copiar y publicar este producto\n\nProducto: ${title.substring(0, 60)}\nPrecio original: $${price}\nNuevo precio (+${markup}%): $${newPrice}\n\nSe copiarán título, imágenes, categoría, variaciones y descripción.\n¿Continuar?`)) {
+      return;
+    }
+
+    logActivity('SELL', `Starting sell flow for ${mlvId}: "${title.substring(0, 40)}" → $${newPrice} (+${markup}%)`, 'info');
+
+    // Step 1: Fetch full item data via ML API
+    setDebugger(`[Vender ${mlvId}]: Obteniendo datos completos vía API...`);
+    const fullResponse = await sendMessage({ action: 'FETCH_FULL_ITEM', itemId: mlvId });
+
+    if (!fullResponse || !fullResponse.success) {
+      const errMsg = fullResponse && fullResponse.error ? fullResponse.error : 'sin respuesta';
+      logActivity('SELL', `${mlvId}: FETCH_FULL_ITEM FAILED — ${errMsg}`, 'error');
+      alert(`❌ No se pudo obtener el producto de la API de ML.\n\nError: ${errMsg}\n\nPosibles causas:\n• Tu token expiró o no tiene permisos\n• ML bloqueó la API pública\n• El producto no existe o fue eliminado`);
+      return;
+    }
+
+    const item = fullResponse.item;
+    const description = fullResponse.description || '';
+    logActivity('SELL', `${mlvId}: Full item obtained — title="${(item.title || '').substring(0, 30)}", ${item.pictures ? item.pictures.length : 0} pictures, ${item.variations ? item.variations.length : 0} variations`, 'info');
+
+    // Step 2: Build POST payload (based on user's original code)
+    const postData = {
+      title: item.title,
+      price: newPrice,
+      currency_id: item.currency_id,
+      category_id: item.category_id,
+      available_quantity: item.available_quantity || 1,
+      buying_mode: item.buying_mode || 'buy_it_now',
+      listing_type_id: item.listing_type_id || 'gold_special',
+      condition: item.condition || 'new',
+      pictures: (item.pictures || []).map((pic) => ({
+        source: pic.secure_url || pic.url
+      }))
+    };
+
+    // Copy variations (if any) — remove original IDs
+    if (Array.isArray(item.variations) && item.variations.length > 0) {
+      postData.variations = item.variations.map((v) => {
+        const copy = { ...v };
+        delete copy.id;
+        delete copy.item_id;
+        copy.price = Math.ceil((v.price || price) * (1 + markup / 100));
+        return copy;
+      });
+    }
+
+    // Copy attributes if available
+    if (Array.isArray(item.attributes) && item.attributes.length > 0) {
+      postData.attributes = item.attributes.map((attr) => ({
+        id: attr.id,
+        value_id: attr.value_id,
+        value_name: attr.value_name
+      }));
+    }
+
+    // Step 3: POST /items to create the listing
+    setDebugger(`[Vender ${mlvId}]: Publicando nuevo anuncio ($${newPrice})...`);
+    logActivity('SELL', `${mlvId}: POSTing new listing...`, 'info');
+    const postResponse = await sendMessage({ action: 'POST_ITEM', itemData: postData });
+
+    if (!postResponse || !postResponse.success) {
+      const errMsg = postResponse && postResponse.error ? postResponse.error : 'sin respuesta';
+      logActivity('SELL', `${mlvId}: POST_ITEM FAILED — ${errMsg}`, 'error');
+      alert(`❌ Error al publicar el producto.\n\nError: ${errMsg}\n\nPosibles causas:\n• Categoría requiere atributos obligatorios\n• Precio fuera del rango permitido\n• Token sin permisos de escritura\n• Límite de publicaciones alcanzado`);
+      return;
+    }
+
+    const newItem = postResponse.item;
+    const newId = newItem.id;
+    const newPermalink = newItem.permalink || `https://articulo.mercadolibre.com.ve/${newId}`;
+    logActivity('SELL', `${mlvId}: POST OK! New listing: ${newId} — ${newPermalink}`, 'info');
+
+    // Step 4: Add description with original seller reference
+    const descText = `SIEMPRE PREGUNTAR DISPONIBILIDAD ANTES DE COMPRAR!!!\n\nOriginal: ${item.seller_id}:${item.id}\n\n${description}`;
+    setDebugger(`[Vender ${mlvId}]: Agregando descripción...`);
+    const descResponse = await sendMessage({ action: 'POST_ITEM_DESC', itemId: newId, description: descText });
+
+    if (descResponse && descResponse.success) {
+      logActivity('SELL', `${mlvId} → ${newId}: Description added`, 'info');
+    } else {
+      logActivity('SELL', `${newId}: Description failed (non-critical) — ${descResponse ? descResponse.error : 'no response'}`, 'warn');
+    }
+
+    setDebugger(`[Vender]: ¡Listo! ${newPermalink}`);
+    logActivity('SELL', `✅ Sell complete: ${mlvId} → ${newId} (${newPermalink})`, 'info');
+
+    alert(`✅ ¡Producto publicado!\n\nNuevo ID: ${newId}\nPrecio: $${newPrice}\n\nURL: ${newPermalink}\n\nLa descripción se agregó con referencia al vendedor original.`);
   }
 
   function toggleSelectForDeep(product) {

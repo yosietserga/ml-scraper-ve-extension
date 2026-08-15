@@ -299,6 +299,101 @@ async function fetchSeller(sellerId, accessToken) {
 }
 
 /* ------------------------------------------------------------------ */
+/* ML Sell API (v6.12.0)                                              */
+/*                                                                    */
+/* Fetches the full item data (with attributes + description), then  */
+/* creates a copy under the user's account via POST /items.            */
+/*                                                                    */
+/* Based on the user's original Node.js code that:                    */
+/*   1. GET /items/{id}?include_attributes=all → full product JSON    */
+/*   2. GET /items/{id}/description → description text                 */
+/*   3. POST /items → create new listing (price * 1.2 markup)         */
+/*   4. POST /items/{newId}/description → add description with ref    */
+/* ------------------------------------------------------------------ */
+
+async function fetchFullItem(itemId, accessToken) {
+  if (!itemId) return { success: false, error: 'No item id' };
+  const headers = {};
+  if (accessToken && typeof accessToken === 'string' && accessToken.trim()) {
+    headers['Authorization'] = 'Bearer ' + accessToken.trim();
+  }
+  try {
+    // Get full item data
+    const itemUrl = `https://api.mercadolibre.com/items/${encodeURIComponent(itemId)}?include_attributes=all`;
+    const itemRes = await fetch(itemUrl, { headers, credentials: 'omit' });
+    if (!itemRes.ok) {
+      const text = await itemRes.text().catch(() => '');
+      return { success: false, error: 'HTTP ' + itemRes.status, body: text };
+    }
+    const item = await itemRes.json();
+
+    // Get description (separate endpoint)
+    let description = '';
+    try {
+      const descRes = await fetch(`https://api.mercadolibre.com/items/${encodeURIComponent(itemId)}/description`, { headers, credentials: 'omit' });
+      if (descRes.ok) {
+        const descData = await descRes.json();
+        description = descData.plain_text || descData.text || '';
+      }
+    } catch (e) { /* description is optional */ }
+
+    return { success: true, item, description };
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+async function postItem(itemData, accessToken) {
+  if (!accessToken || !accessToken.trim()) {
+    return { success: false, error: 'No access token. Pega tu token en Filtros & Config.' };
+  }
+  try {
+    const res = await fetch('https://api.mercadolibre.com/items', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + accessToken.trim(),
+        'Content-Type': 'application/json'
+      },
+      credentials: 'omit',
+      body: JSON.stringify(itemData)
+    });
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch (e) { data = { raw: text }; }
+    if (!res.ok) {
+      const errMsg = data.message || data.error || ('HTTP ' + res.status);
+      const cause = data.cause ? JSON.stringify(data.cause).substring(0, 300) : '';
+      return { success: false, error: errMsg + (cause ? ' — ' + cause : ''), status: res.status, body: text.substring(0, 500) };
+    }
+    return { success: true, item: data };
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+async function postItemDescription(itemId, descriptionText, accessToken) {
+  if (!accessToken || !accessToken.trim()) return { success: false, error: 'No token' };
+  try {
+    const res = await fetch(`https://api.mercadolibre.com/items/${encodeURIComponent(itemId)}/description`, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + accessToken.trim(),
+        'Content-Type': 'application/json'
+      },
+      credentials: 'omit',
+      body: JSON.stringify({ plain_text: descriptionText })
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      return { success: false, error: 'HTTP ' + res.status, body: text.substring(0, 200) };
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Message router                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -439,6 +534,37 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const tokenData = await chrome.storage.local.get(STORAGE_KEYS.ACCESS_TOKEN);
         const token = tokenData[STORAGE_KEYS.ACCESS_TOKEN] || '';
         const result = await fetchSeller(request.sellerId, token);
+        sendResponse(result);
+      })().catch((err) => sendResponse({ success: false, error: String(err) }));
+      return true;
+    }
+
+    // v6.12.0: Sell feature — fetch full item + POST new listing + description
+    case 'FETCH_FULL_ITEM': {
+      (async () => {
+        const tokenData = await chrome.storage.local.get(STORAGE_KEYS.ACCESS_TOKEN);
+        const token = tokenData[STORAGE_KEYS.ACCESS_TOKEN] || '';
+        const result = await fetchFullItem(request.itemId, token);
+        sendResponse(result);
+      })().catch((err) => sendResponse({ success: false, error: String(err) }));
+      return true;
+    }
+
+    case 'POST_ITEM': {
+      (async () => {
+        const tokenData = await chrome.storage.local.get(STORAGE_KEYS.ACCESS_TOKEN);
+        const token = tokenData[STORAGE_KEYS.ACCESS_TOKEN] || '';
+        const result = await postItem(request.itemData, token);
+        sendResponse(result);
+      })().catch((err) => sendResponse({ success: false, error: String(err) }));
+      return true;
+    }
+
+    case 'POST_ITEM_DESC': {
+      (async () => {
+        const tokenData = await chrome.storage.local.get(STORAGE_KEYS.ACCESS_TOKEN);
+        const token = tokenData[STORAGE_KEYS.ACCESS_TOKEN] || '';
+        const result = await postItemDescription(request.itemId, request.description, token);
         sendResponse(result);
       })().catch((err) => sendResponse({ success: false, error: String(err) }));
       return true;
