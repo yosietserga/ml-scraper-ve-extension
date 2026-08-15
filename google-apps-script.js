@@ -46,6 +46,7 @@ var HEADERS = [
   'Ubicacion_Tienda',
   'Categoria', 'Subcategorias', 'Categorias',
   'Marca', 'Modelo', 'Especificaciones',
+  'Category_Id', 'Seller_Id', 'Nordic_Attributes', 'All_Pictures',
   'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor',
   'DeepExtracted', 'Synced_At'
 ];
@@ -208,6 +209,10 @@ function productToRow(p, mlvId) {
     p.Marca || 'N/A',
     p.Modelo || 'N/A',
     p.Especificaciones || 'N/A',
+    p.CategoryId || '',
+    p.SellerId || '',
+    p.NordicAttrs ? JSON.stringify(p.NordicAttrs) : '',
+    p.AllPictures ? p.AllPictures.join(' ; ') : '',
     p.Imagen || '',
     p.Link || '',
     p.Google_Breakout_Vendedor || '',

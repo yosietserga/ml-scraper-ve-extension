@@ -134,7 +134,9 @@
       'Nombre', 'Precio_Numerico', 'Score', 'Opiniones', 'Ventas_Estimadas',
       'Visitas_10dias',
       'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Vendedor_Seguidores', 'Vendedor_Productos', 'Vendedor_Ventas', 'Vendedor_Recomendacion', 'Vendedor_AniosML', 'Vendedor_Link',
-      'Ubicacion_Tienda', 'Categoria', 'Subcategorias', 'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
+      'Ubicacion_Tienda', 'Categoria', 'Subcategorias', 'Categorias', 'Marca', 'Modelo', 'Especificaciones',
+      'Category_Id', 'Seller_Id', 'Nordic_Attributes', 'All_Pictures',
+      'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
     ];
     const cell = (v) => '"' + (v === null || v === undefined ? '' : String(v)).replace(/"/g, '""') + '"';
     const rows = validProducts.map((p) => [
@@ -148,7 +150,11 @@
       cell(p.Ubicacion || 'N/A'),
       cell(p.Categoria || 'N/A'), cell(p.Subcategorias || 'N/A'), cell(p.Categorias || 'N/A'),
       cell(p.Marca || 'N/A'), cell(p.Modelo || 'N/A'),
-      cell(p.Especificaciones || 'N/A'), cell(p.Imagen || ''), cell(p.Link || ''),
+      cell(p.Especificaciones || 'N/A'),
+      cell(p.CategoryId || ''), cell(p.SellerId || ''),
+      cell(p.NordicAttrs ? JSON.stringify(p.NordicAttrs) : ''),
+      cell(p.AllPictures ? p.AllPictures.join(' ; ') : ''),
+      cell(p.Imagen || ''), cell(p.Link || ''),
       cell(p.Google_Breakout_Vendedor || '')
     ].join(','));
     const csv = '\uFEFF' + [headers.join(','), ...rows].join('\r\n');

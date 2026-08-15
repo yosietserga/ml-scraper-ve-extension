@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.13.4';
+  const EXT_VERSION = '6.14.0';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -1621,9 +1621,13 @@
 
     updateSellStatus(`💰 Vendiendo ${mlvId}: "${title.substring(0, 30)}" → $${newPrice} (+${markup}%)`);
 
-    // Step 1: Auto deep-extract if needed
-    if (!product.DeepExtracted || !product.CategoryId) {
-      updateSellStatus(`💰 ${mlvId}: Deep extraction automático...`);
+    // v6.14.0: optimized — only deep-extract if we DON'T already have the needed data.
+    // Check: DeepExtracted + CategoryId + NordicAttrs (the source of truth for Vender)
+    const hasAllSellData = product.DeepExtracted && product.CategoryId &&
+      product.NordicAttrs && Object.keys(product.NordicAttrs).length > 0;
+
+    if (!hasAllSellData) {
+      updateSellStatus(`💰 ${mlvId}: Deep extraction automático (obteniendo datos completos)...`);
       // Temporarily set deepQueue to just this one item
       const savedQueue = deepQueue.slice();
       deepQueue.length = 0;
@@ -1638,7 +1642,7 @@
       if (allData && allData.products) {
         const updated = allData.products.find(p => p.id === product.id || extractMlvId(p.Link) === mlvId);
         if (updated) {
-          product = updated;  // use the freshly extracted data
+          product = updated;
         }
       }
 
@@ -1647,6 +1651,8 @@
         logActivity('SELL', `${mlvId}: CategoryId not found after deep extraction`, 'error');
         return;
       }
+    } else {
+      logActivity('SELL', `💰 ${mlvId}: Already has all sell data (CategoryId=${product.CategoryId}, ${Object.keys(product.NordicAttrs).length} attrs). Skipping deep extraction.`, 'info');
     }
 
     updateSellStatus(`💰 ${mlvId}: CategoryId=${product.CategoryId}, obteniendo atributos requeridos...`);
@@ -2890,7 +2896,9 @@
       'Nombre', 'Precio_Numerico', 'Score', 'Opiniones', 'Ventas_Estimadas',
       'Visitas_10dias',
       'EnvioGratis', 'Vendedor_Nombre', 'Vendedor_Estatus', 'Vendedor_Seguidores', 'Vendedor_Productos', 'Vendedor_Ventas', 'Vendedor_Recomendacion', 'Vendedor_AniosML', 'Vendedor_Link',
-      'Ubicacion_Tienda', 'Categoria', 'Subcategorias', 'Categorias', 'Marca', 'Modelo', 'Especificaciones', 'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
+      'Ubicacion_Tienda', 'Categoria', 'Subcategorias', 'Categorias', 'Marca', 'Modelo', 'Especificaciones',
+      'Category_Id', 'Seller_Id', 'Nordic_Attributes', 'All_Pictures',
+      'Imagen', 'Link_Producto', 'Google_Breakout_Vendedor'
     ];
 
     const rows = validProducts.map((p) => [
@@ -2916,6 +2924,10 @@
       csvCell(p.Marca || 'N/A'),
       csvCell(p.Modelo || 'N/A'),
       csvCell(p.Especificaciones || 'N/A'),
+      csvCell(p.CategoryId || ''),
+      csvCell(p.SellerId || ''),
+      csvCell(p.NordicAttrs ? JSON.stringify(p.NordicAttrs) : ''),
+      csvCell(p.AllPictures ? p.AllPictures.join(' ; ') : ''),
       csvCell(p.Imagen || ''),
       csvCell(p.Link || ''),
       csvCell(p.Google_Breakout_Vendedor || '')
