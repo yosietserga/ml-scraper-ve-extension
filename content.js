@@ -31,7 +31,7 @@
   if (window.__ML_SCRAPER_V6_LOADED__) return;
   window.__ML_SCRAPER_V6_LOADED__ = true;
 
-  const EXT_VERSION = '6.13.1';
+  const EXT_VERSION = '6.13.2';
   const STORAGE_KEY_PRODUCTS = 'ml_products';
   const STORAGE_KEY_QUEUE = 'ml_deep_queue';
   const STORAGE_KEY_QUEUE_WORK = 'ml_queue_work';        // v6.3.0: persisted crawl phrase/URL queue
@@ -1556,7 +1556,35 @@
    *    7. POST /items/{id}/description
    *  Status shown in the UI status bar + activity log, not browser dialogs.
    */
+  // v6.13.2: Sell queue — serializes multiple sellProduct calls so they
+  // don't interfere with each other (deep extraction is not reentrant).
+  let sellQueue = [];
+  let isSelling = false;
+
   async function sellProduct(product) {
+    // v6.13.2: if a sell is already in progress, queue this one
+    if (isSelling) {
+      sellQueue.push(product);
+      logActivity('SELL', `💰 Queued ${extractMlvId(product.Link)} (waiting for previous sell to finish, queue: ${sellQueue.length})`, 'info');
+      const queueStatus = document.getElementById('ml-status');
+      if (queueStatus) queueStatus.innerText = `💰 Cola de venta: ${sellQueue.length} pendientes...`;
+      return;
+    }
+    isSelling = true;
+    await _sellProductInternal(product);
+    isSelling = false;
+
+    // Process queue
+    while (sellQueue.length > 0) {
+      const next = sellQueue.shift();
+      logActivity('SELL', `💰 Processing queued sell: ${extractMlvId(next.Link)}`, 'info');
+      isSelling = true;
+      await _sellProductInternal(next);
+      isSelling = false;
+    }
+  }
+
+  async function _sellProductInternal(product) {
     const mlvId = extractMlvId(product.Link) || product.id;
     const title = product.Nombre || '(sin título)';
     const price = product.Precio_Numerico || 0;
@@ -1585,23 +1613,15 @@
 
     // Step 1: Auto deep-extract if needed
     if (!product.DeepExtracted || !product.CategoryId) {
-      updateSellStatus(`💰 ${mlvId}: Extrayendo datos del artículo (deep extraction automático)...`);
-      // Add to deep queue and process just this one item
+      updateSellStatus(`💰 ${mlvId}: Deep extraction automático...`);
+      // Temporarily set deepQueue to just this one item
+      const savedQueue = deepQueue.slice();
+      deepQueue.length = 0;
       deepQueue.push({ id: product.id, Link: product.Link, Nombre: product.Nombre });
+      await runAsyncFetchQueue();
+      // Restore the original queue
+      deepQueue.push(...savedQueue);
       await persistDeepQueue();
-
-      // Run deep extraction for just this one item
-      const wasDeepCrawling = isDeepCrawling;
-      if (!wasDeepCrawling) {
-        // Temporarily set deepQueue to just this one item
-        const savedQueue = deepQueue.slice();
-        deepQueue.length = 0;
-        deepQueue.push({ id: product.id, Link: product.Link, Nombre: product.Nombre });
-        await runAsyncFetchQueue();
-        // Restore the original queue
-        deepQueue.push(...savedQueue);
-        await persistDeepQueue();
-      }
 
       // Reload the product from storage to get the extracted data
       const allData = await sendMessage({ action: 'GET_ALL_DATA' });
@@ -1613,7 +1633,7 @@
       }
 
       if (!product.CategoryId) {
-        updateSellStatus(`❌ ${mlvId}: No se pudo obtener category_id del DOM.`);
+        updateSellStatus(`❌ ${mlvId}: No se pudo obtener category_id.`);
         logActivity('SELL', `${mlvId}: CategoryId not found after deep extraction`, 'error');
         return;
       }
@@ -1629,53 +1649,68 @@
       updateSellStatus(`💰 ${mlvId}: ${requiredAttrs.length} atributos requeridos para ${product.CategoryId}`);
     }
 
-    // Step 3: Build attributes payload — match scraped data to required attrs
+    // Step 3: Build attributes payload
+    // v6.13.2: match required attrs against NordicAttrs (all attributes from the original product)
     let attributes = [];
+    let missingAttrs = [];
     for (const attr of requiredAttrs) {
-      const attrName = (attr.name || '').toLowerCase();
       const attrId = attr.id;
-
-      // Try to match from our scraped data
+      const attrName = (attr.name || '').toLowerCase();
       let valueName = '';
-      if (attrId === 'BRAND' || attrName === 'marca') {
-        valueName = product.Marca && product.Marca !== 'N/A' ? product.Marca : '';
-      } else if (attrId === 'MODEL' || attrName === 'modelo') {
-        valueName = product.Modelo && product.Modelo !== 'N/A' ? product.Modelo : '';
-      } else if (attrId === 'COLOR' || attrName === 'color') {
-        // Try to extract from specs
-        if (product.Especificaciones) {
-          const m = product.Especificaciones.match(/Color:\s*([^|]+)/i);
+      let valueId = '';
+
+      // v6.13.2: First try NordicAttrs (most reliable — has exact values from original listing)
+      if (product.NordicAttrs && product.NordicAttrs[attrId]) {
+        valueName = product.NordicAttrs[attrId].value_name || '';
+        valueId = product.NordicAttrs[attrId].value_id || '';
+      }
+
+      // Fallback: try by name match in NordicAttrs
+      if (!valueName && product.NordicAttrs) {
+        for (const [id, data] of Object.entries(product.NordicAttrs)) {
+          if (data.name && data.name.toLowerCase() === attrName && data.value_name) {
+            valueName = data.value_name;
+            valueId = data.value_id || '';
+            break;
+          }
+        }
+      }
+
+      // Fallback: try from scraped Marca/Modelo
+      if (!valueName) {
+        if (attrId === 'BRAND' || attrName === 'marca') {
+          valueName = product.Marca && product.Marca !== 'N/A' ? product.Marca : '';
+        } else if (attrId === 'MODEL' || attrName === 'modelo') {
+          valueName = product.Modelo && product.Modelo !== 'N/A' ? product.Modelo : '';
+        } else if (product.Especificaciones) {
+          // Try to extract from specs by attr name
+          const m = product.Especificaciones.match(new RegExp(attrName + ':\\s*([^|]+)', 'i'));
           if (m) valueName = m[1].trim();
         }
-      } else if (attrId === 'VOLTAGE' || attrName === 'voltaje') {
-        if (product.Especificaciones) {
-          const m = product.Especificaciones.match(/Voltaje:\s*([^|]+)/i);
-          if (m) valueName = m[1].trim();
-        }
+      }
+
+      // Try to match to a valid value ID from the API if we don't have one
+      if (valueName && !valueId && Array.isArray(attr.values)) {
+        const match = attr.values.find(v => v.name && v.name.toLowerCase() === valueName.toLowerCase());
+        if (match) valueId = match.id;
       }
 
       if (valueName) {
-        // Try to match to a valid value ID from the API
-        let valueId = '';
-        if (Array.isArray(attr.values)) {
-          const match = attr.values.find(v => v.name && v.name.toLowerCase() === valueName.toLowerCase());
-          if (match) valueId = match.id;
-        }
-        attributes.push({
-          id: attrId,
-          value_id: valueId || undefined,
-          value_name: valueName
-        });
-        // Clean undefined
-        Object.keys(attributes[attributes.length - 1]).forEach(k => attributes[attributes.length - 1][k] === undefined && delete attributes[attributes.length - 1][k]);
+        const attrObj = { id: attrId, value_name: valueName };
+        if (valueId) attrObj.value_id = valueId;
+        attributes.push(attrObj);
+      } else {
+        missingAttrs.push(`${attrId} (${attr.name})`);
       }
     }
 
-    updateSellStatus(`💰 ${mlvId}: ${attributes.length}/${requiredAttrs.length} atributos completados`);
+    updateSellStatus(`💰 ${mlvId}: ${attributes.length}/${requiredAttrs.length} atributos completados${missingAttrs.length ? ' — faltan: ' + missingAttrs.join(', ') : ''}`);
 
-    // Step 4: Build pictures from scraped image
+    // Step 4: Build pictures — use all from Nordic if available
     let pictures = [];
-    if (product.Imagen) {
+    if (product.AllPictures && product.AllPictures.length > 0) {
+      pictures = product.AllPictures.map(url => ({ source: url }));
+    } else if (product.Imagen) {
       pictures.push({ source: product.Imagen });
     }
 
@@ -1708,7 +1743,7 @@
 
     if (!postResponse || !postResponse.success) {
       const errMsg = postResponse && postResponse.error ? postResponse.error : 'sin respuesta';
-      updateSellStatus(`❌ ${mlvId}: Error al publicar — ${errMsg.substring(0, 100)}`);
+      updateSellStatus(`❌ ${mlvId}: Error al publicar — ${errMsg.substring(0, 120)}`);
       logActivity('SELL', `${mlvId}: POST FAILED — ${errMsg}`, 'error');
       return;
     }
@@ -1723,7 +1758,7 @@
     if (descResponse && descResponse.success) {
       updateSellStatus(`✅ ${mlvId} → ${newId}: ¡Publicado! ${newPermalink}`);
     } else {
-      updateSellStatus(`✅ ${mlvId} → ${newId}: Publicado (descripción falló, no crítico)`);
+      updateSellStatus(`✅ ${mlvId} → ${newId}: Publicado (descripción falló)`);
     }
 
     logActivity('SELL', `✅ Sell complete: ${mlvId} → ${newId} (${newPermalink}) — $${newPrice}`, 'info');
@@ -2344,7 +2379,8 @@
               if (cs.price && parsedPrice.num === 0) parsedPrice.num = cs.price;
               if (cs.currency_id && parsedPrice.currency === 'N/A') parsedPrice.currency = cs.currency_id;
               if (cs.condition) {} // we already have condition from DOM
-              // Extract attributes
+              // v6.13.2: Extract ALL attributes from Nordic JSON
+              // Store as a map { attrId: { name, value_name, value_id } } for later matching
               if (Array.isArray(cs.attributes) && cs.attributes.length > 0) {
                 for (const attr of cs.attributes) {
                   const aId = attr.id || '';
@@ -2353,11 +2389,21 @@
                   if (aId === 'BRAND' || aName === 'marca') brand = aVal || brand;
                   if (aId === 'MODEL' || aName === 'modelo') model = aVal || model;
                   if (aVal) specList.push(`${attr.name || aId}: ${aVal}`);
+                  // v6.13.2: store in map for Vender attribute matching
+                  nordicAttrs[aId] = {
+                    name: attr.name || aId,
+                    value_name: aVal,
+                    value_id: attr.value_id || ''
+                  };
                 }
               }
-              // Extract pictures
-              if (Array.isArray(cs.pictures) && cs.pictures.length > 0 && !imageSrc) {
-                imageSrc = cs.pictures[0].secure_url || cs.pictures[0].url || '';
+              // Extract pictures — get ALL of them, not just the first
+              if (Array.isArray(cs.pictures) && cs.pictures.length > 0) {
+                if (!imageSrc) {
+                  imageSrc = cs.pictures[0].secure_url || cs.pictures[0].url || '';
+                }
+                // Store all picture URLs for the Vender button to use
+                allPictures = cs.pictures.map(p => p.secure_url || p.url).filter(Boolean);
               }
               // Extract seller nickname
               if (cs.seller && cs.seller.nickname) {
@@ -2420,6 +2466,8 @@
     const specList = [];
     let brand = 'N/A';
     let model = 'N/A';
+    let allPictures = [];   // v6.13.2: all picture URLs from Nordic JSON
+    let nordicAttrs = {};   // v6.13.2: { attrId: { name, value_name, value_id } } from Nordic JSON
     specsTables.forEach((table) => {
       table.querySelectorAll('tr').forEach((r) => {
         const th = r.querySelector('th');
@@ -2470,6 +2518,8 @@
       Vendedor_Link: sellerPageLink,           // v6.9.0: link to seller's ML store page
       CategoryId: categoryId,                 // v6.13.0: ML category ID (e.g. MLV1676)
       SellerId: sellerId,                     // v6.13.0: ML seller ID
+      NordicAttrs: nordicAttrs,               // v6.13.2: all attributes from Nordic JSON
+      AllPictures: allPictures,               // v6.13.2: all picture URLs from Nordic JSON
       Categorias: Array.from(breadcrumbs).map((b) => (b.innerText || b.textContent || '').trim()).join(' > '),
       Categoria: Array.from(breadcrumbs).length > 0 ? (Array.from(breadcrumbs)[0].innerText || Array.from(breadcrumbs)[0].textContent || '').trim() : 'N/A',  // v6.9.0: level 0
       Subcategorias: Array.from(breadcrumbs).length > 1 ? Array.from(breadcrumbs).slice(1).map((b) => (b.innerText || b.textContent || '').trim()).join(' > ') : 'N/A',  // v6.9.0: rest
