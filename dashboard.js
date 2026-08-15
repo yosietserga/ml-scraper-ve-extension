@@ -90,11 +90,17 @@
     const buttons = [];
     const breakout = p.Google_Breakout_Vendedor;
     const name = p.Vendedor_Nombre;
+    // v6.16.1: include seller city for much better Google OSINT results
+    const city = p.Ubicacion && p.Ubicacion !== 'No especificada' && p.Ubicacion !== 'N/A'
+      ? p.Ubicacion.split(',')[0].trim() : '';
     if (breakout) {
-      buttons.push(`<a href="${escapeHtml(breakout)}" target="_blank" rel="noopener" class="btn btn-navy btn-sm" title="OSINT: Búsqueda Google sobre el vendedor — encuentra contactos, redes sociales, otras tiendas">🔍 OSINT</a>`);
+      buttons.push(`<a href="${escapeHtml(breakout)}" target="_blank" rel="noopener" class="btn btn-navy btn-sm" title="OSINT: Búsqueda Google sobre el vendedor — encuentra contactos, redes sociales, otras tiendas${city ? ' (ciudad: ' + city + ')' : ''}">🔍 OSINT</a>`);
     } else if (name && name !== 'N/A' && name !== 'Pendiente') {
-      const q = encodeURIComponent('"' + name + '" vendedor contacto OR tienda OR teléfono OR email');
-      buttons.push(`<a href="https://www.google.com/search?q=${q}" target="_blank" rel="noopener" class="btn btn-navy btn-sm" title="OSINT: Buscar contactos del vendedor en Google">🔍 OSINT</a>`);
+      const qStr = city
+        ? '"' + name + '" Venezuela ' + city + ' (whatsapp OR instagram OR rif OR telefono OR tienda)'
+        : '"' + name + '" Venezuela (whatsapp OR instagram OR rif OR telefono OR tienda)';
+      const q = encodeURIComponent(qStr);
+      buttons.push(`<a href="https://www.google.com/search?q=${q}" target="_blank" rel="noopener" class="btn btn-navy btn-sm" title="OSINT: Buscar contactos del vendedor en Google${city ? ' (ciudad: ' + city + ')' : ''}">🔍 OSINT</a>`);
     }
     if (p.Vendedor_Link) {
       buttons.push(`<a href="${escapeHtml(p.Vendedor_Link)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" title="🏪 Tienda ML: ${escapeHtml(name || '')}">🏪 Tienda</a>`);

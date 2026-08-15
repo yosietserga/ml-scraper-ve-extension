@@ -2662,7 +2662,12 @@
     });
 
     // 10. Google breakout URL for seller OSINT
-    const googleQuery = encodeURIComponent(`"${sellerName}" Venezuela (whatsapp OR instagram OR rif OR telefono OR tienda)`);
+    // v6.16.1: include the seller's city for much better Google results
+    const sellerCity = locationText && locationText !== 'No especificada' ? locationText.split(',')[0].trim() : '';
+    const googleQueryStr = sellerCity
+      ? `"${sellerName}" Venezuela ${sellerCity} (whatsapp OR instagram OR rif OR telefono OR tienda)`
+      : `"${sellerName}" Venezuela (whatsapp OR instagram OR rif OR telefono OR tienda)`;
+    const googleQuery = encodeURIComponent(googleQueryStr);
     const googleBreakoutUrl = `https://www.google.com/search?q=${googleQuery}`;
 
     const mlvId = extractMlvId(targetUrl);
@@ -2902,7 +2907,11 @@
 
     // Google breakout URL for seller OSINT
     const sellerName = item.seller_id ? `seller_${item.seller_id}` : 'Desconocido';
-    const googleQuery = encodeURIComponent(`"${sellerName}" Venezuela (whatsapp OR instagram OR rif OR telefono OR tienda)`);
+    const apiSellerCity = item.seller_address && item.seller_address.city ? item.seller_address.city.name : '';
+    const apiGoogleQuery = apiSellerCity
+      ? `"${sellerName}" Venezuela ${apiSellerCity} (whatsapp OR instagram OR rif OR telefono OR tienda)`
+      : `"${sellerName}" Venezuela (whatsapp OR instagram OR rif OR telefono OR tienda)`;
+    const googleQuery = encodeURIComponent(apiGoogleQuery);
     const googleBreakoutUrl = `https://www.google.com/search?q=${googleQuery}`;
 
     // Permalink
@@ -2945,7 +2954,13 @@
     const container = document.getElementById('seller-inspection-container');
     if (!container) return;
     const sellerName = product.Vendedor_Nombre || 'Vendedor MercadoLibre';
-    const googleQuery = encodeURIComponent(`"${sellerName}" Venezuela (whatsapp OR instagram OR rif OR telefono OR tienda)`);
+    // v6.16.1: include seller city for much better Google OSINT results
+    const sellerCity = product.Ubicacion && product.Ubicacion !== 'No especificada' && product.Ubicacion !== 'N/A'
+      ? product.Ubicacion.split(',')[0].trim() : '';
+    const googleQueryStr = sellerCity
+      ? `"${sellerName}" Venezuela ${sellerCity} (whatsapp OR instagram OR rif OR telefono OR tienda)`
+      : `"${sellerName}" Venezuela (whatsapp OR instagram OR rif OR telefono OR tienda)`;
+    const googleQuery = encodeURIComponent(googleQueryStr);
     const googleLink = product.Google_Breakout_Vendedor || `https://www.google.com/search?q=${googleQuery}`;
 
     const safeName = escapeHtml(product.Nombre || '');
